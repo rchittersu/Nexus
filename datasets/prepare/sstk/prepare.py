@@ -113,7 +113,10 @@ def write_images(images_path: np.ndarray, args: ArgumentParser) -> None:
                 cap_path = str(f) + '.json'
                 with open(cap_path, 'r') as cf:
                     cap = json.load(cf)['description']
-                cap = str(cap).strip() if cap else ''
+                if isinstance(cap, list):
+                    cap = json.dumps([str(c).strip() if c else '' for c in cap])
+                else:
+                    cap = str(cap).strip() if cap else ''
                 
                 mds_sample = {
                     'image': img,
@@ -141,15 +144,15 @@ def main() -> None:
         images_path = [line.strip() for line in f if line.strip()]
     print(f"Total {len(images_path)} images in txt file")
 
-    # Sample based on seed and size
-    rng = np.random.default_rng(args.seed)
+    # Shuffle only when sampling; take first n after shuffle
     if args.size is not None:
         n = min(args.size, len(images_path))
-        images_path = rng.choice(images_path, size=n, replace=False).tolist()
+        rng = np.random.default_rng(args.seed)
+        rng.shuffle(images_path)
+        images_path = images_path[:n]
         print(f"Sampled {n} images (seed={args.seed}, size={args.size})")
     else:
-        rng.shuffle(images_path)
-        print(f"Using all {len(images_path)} images (shuffled with seed={args.seed})")
+        print(f"Using all {len(images_path)} images")
 
     # use one worker per list of images
     images_path = np.array_split(images_path, args.num_proc)

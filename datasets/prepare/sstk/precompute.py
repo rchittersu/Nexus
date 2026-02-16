@@ -1,20 +1,101 @@
 import os
 import time
 from argparse import ArgumentParser
+from typing import Dict, List, Optional, Union
 
 import numpy as np
 import torch
-from torch.nn.utils.rnn import pad_sequence
 from accelerate import Accelerator
 from diffusers import AutoencoderKLFlux2, Flux2KleinPipeline
-from transformers import Qwen3ForCausalLM, Qwen2TokenizerFast
 from diffusers.models.modeling_outputs import AutoencoderKLOutput
 from streaming import MDSWriter
 from streaming.base.util import merge_index
+from torch.utils.data import DataLoader
+from torchvision import transforms
 from tqdm import tqdm
+from transformers import Qwen2TokenizerFast, Qwen3ForCausalLM
 
-from .base import build_streaming_sstk_t2i_dataloader
+from nexus.data.t2i_dataset import StreamingT2IDataset
+from nexus.data.utils import text_preprocessing
 from nexus.utils import DATA_TYPES
+
+
+def build_streaming_sstk_t2i_dataloader(
+    datadir: Union[List[str], str],
+    batch_size: int,
+    resize_sizes: Optional[List[int]] = None,
+    drop_last: bool = False,
+    shuffle: bool = True,
+    image_key: str = 'image',
+    caption_key: str = 'caption',
+    clean_caption: bool = True,
+    **dataloader_kwargs,
+) -> DataLoader:
+    assert resize_sizes is not None, 'Must provide target resolution for image resizing'
+
+    transforms_list = [
+        transforms.Compose([
+                transforms.Resize(
+                    size,
+                    interpolation=transforms.InterpolationMode.BICUBIC,
+                ),
+                transforms.CenterCrop(size),
+                transforms.ToTensor(),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+            ])
+        for size in resize_sizes
+    ]
+
+    dataset = StreamingT2IDataset(
+        streams=datadir,
+        transforms_list=transforms_list,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        image_key=image_key,
+        caption_key=caption_key,
+        clean_caption=clean_caption,
+    )
+
+    def custom_collate(batch_items: List[Dict]) -> Dict:
+        out = {k: [] for k in batch_items[0].keys()}
+        for item in batch_items:
+            for key, value in item.items():
+                out[key].append(value)
+        return out
+
+    dataloader = DataLoader(
+        dataset=dataset,
+        batch_size=batch_size,
+        drop_last=drop_last,
+        collate_fn=custom_collate,
+        **dataloader_kwargs,
+    )
+
+    return dataloader
+
+def _caption_sample_weights(n: int, weights_arg: Optional[List[float]]) -> np.ndarray:
+    """Build probability weights for n caption indices. If weights_arg has fewer
+    entries, remaining indices get equal share. Normalized to sum to 1."""
+    if weights_arg is None or len(weights_arg) == 0:
+        return np.ones(n) / n
+    w = np.array(weights_arg[:n], dtype=np.float64)
+    if len(w) < n:
+        rest = np.ones(n - len(w)) / (n - len(w))
+        w = np.concatenate([w, rest])
+    return w / w.sum()
+
+
+def _sample_caption(
+    captions: List[str],
+    weights: np.ndarray,
+    rng: np.random.Generator,
+    clean: bool = True,
+) -> str:
+    """Sample one caption by index, preprocess, return string."""
+    idx = rng.choice(len(captions), p=weights)
+    chosen = captions[idx]
+    return text_preprocessing(chosen, clean)[0]
+
 
 """Example usage:
 accelerate launch --multi_gpu --num_processes 8 precompute.py \
@@ -113,7 +194,7 @@ def parse_args() -> ArgumentParser:
         "--text_encoder_out_layers",
         type=int,
         nargs="+",
-        default=[10, 20, 30],
+        default=[9, 18, 27],
         help="Text encoder hidden layers to compute the final text embeddings.",
     )
     parser.add_argument(
@@ -121,6 +202,14 @@ def parse_args() -> ArgumentParser:
         type=int,
         default=512,
         help="Maximum sequence length for text encoding.",
+    )
+    parser.add_argument(
+        "--caption_sample_weights",
+        type=float,
+        nargs="+",
+        default=None,
+        help="Weights for sampling among multiple captions by index (e.g. 0.5,0.3,0.2). "
+        "If fewer weights than captions, remaining indices get equal weight. Default: uniform.",
     )
     args = parser.parse_args()
     if isinstance(args.image_resolutions, int):
@@ -145,6 +234,7 @@ def main(args: ArgumentParser) -> None:
     torch.manual_seed(device_idx + args.seed)
     torch.cuda.manual_seed(device_idx + args.seed)
     np.random.seed(device_idx + args.seed)
+    rng = np.random.default_rng(device_idx + args.seed)
 
     
     # load text encoder and vae
@@ -178,6 +268,12 @@ def main(args: ArgumentParser) -> None:
 
     caption_key = "caption"
     image_key = "image"
+    # Use num_workers=0 when multi-GPU to avoid barrier/CUDA init warnings from forked workers
+    num_workers = 0 if accelerator.num_processes > 1 else 2
+    dataloader_kwargs = dict(num_workers=num_workers, pin_memory=True)
+    if num_workers > 0:
+        dataloader_kwargs["prefetch_factor"] = 2
+        dataloader_kwargs["persistent_workers"] = True
     dataloader = build_streaming_sstk_t2i_dataloader(
         datadir=[args.datadir],
         batch_size=args.batch_size,
@@ -187,18 +283,14 @@ def main(args: ArgumentParser) -> None:
         image_key=image_key,
         caption_key=caption_key,
         clean_caption=True,
-        tokenizer=tokenizer,
-        prefetch_factor=2,
-        num_workers=2,
-        persistent_workers=True,
-        pin_memory=True,
+        **dataloader_kwargs,
     )
+    dataloader = accelerator.prepare(dataloader)
 
 
-    print(f"Device: {device_idx}, Dataloader sample count: {len(dataloader.dataset)}")
     print(
-        f"MP variable -> world size: {os.environ['WORLD_SIZE']}, "
-        f"RANK: {os.environ['RANK']}, {device}"
+        f"Device: {device_idx}, world size: {accelerator.num_processes}, "
+        f"dataloader samples: {len(dataloader.dataset)}, {device}"
     )
 
     columns = {'caption': 'str'}
@@ -244,12 +336,26 @@ def main(args: ArgumentParser) -> None:
                             ).to(DATA_TYPES[args.save_dtype])
                             latents_dict[size] = lat.detach().cpu().numpy()
 
+                    # Sample one caption per sample when multiple exist, then encode
+                    captions_to_encode = []
+                    for i in range(batch_size):
+                        c = batch["caption"][i]
+                        if isinstance(c, list) and len(c) > 1:
+                            weights = _caption_sample_weights(
+                                len(c), args.caption_sample_weights
+                            )
+                            c = _sample_caption(c, weights, rng, clean=True)
+                        elif isinstance(c, list) and len(c) == 1:
+                            c = text_preprocessing(c[0], True)[0]
+                        # else c is already a string
+                        captions_to_encode.append(c)
+
                     # Encode text with text encoder
                     prompt_embeds = None
                     text_ids = None
                     if args.text_encoder:
                         prompt_embeds, text_ids = text_encoding_pipeline.encode_prompt(
-                            prompt=batch["caption"],  
+                            prompt=captions_to_encode,
                             max_sequence_length=args.max_sequence_length,
                             text_encoder_out_layers=args.text_encoder_out_layers,
                         )
@@ -259,7 +365,7 @@ def main(args: ArgumentParser) -> None:
             # Write each sample to MDS
             for i in range(batch_size):
                 mds_sample = {
-                    "caption": batch["caption"][i],
+                    "caption": captions_to_encode[i],
                 }
                 if args.text_encoder:
                     mds_sample["text_embeds"] = prompt_embeds[i].tobytes()

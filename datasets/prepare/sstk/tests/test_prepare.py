@@ -272,6 +272,32 @@ class TestWriteImagesFiltering:
             call_args = writer_instance.write.call_args[0][0]
             assert call_args['caption'] == 'spaced caption'
 
+    def test_list_caption_stored_as_json(self, mock_args, tmp_path):
+        """When description is a list of captions, store as JSON array string."""
+        img_path = tmp_path / 'multi.png'
+        img = Image.new('RGB', (600, 600), color='red')
+        img.save(img_path)
+        cap_path = tmp_path / 'multi.png.json'
+        cap_path.write_text(json.dumps({
+            'description': ['first caption', 'second caption', 'third caption']
+        }))
+
+        images_path = np.array([str(img_path)])
+        mock_args.min_size = 512
+
+        with patch('prepare.current_process_index', return_value=0), \
+             patch('prepare.MDSWriter') as mock_writer, \
+             patch('prepare.tqdm', lambda x: x), \
+             patch('prepare.os.makedirs'):
+            writer_instance = MagicMock()
+            mock_writer.return_value = writer_instance
+
+            write_images(images_path, mock_args)
+            writer_instance.write.assert_called_once()
+            call_args = writer_instance.write.call_args[0][0]
+            stored = json.loads(call_args['caption'])
+            assert stored == ['first caption', 'second caption', 'third caption']
+
     def test_skips_on_image_load_error(self, mock_args, tmp_path):
         """Skips and continues when image loading fails."""
         img_path = tmp_path / 'broken.png'

@@ -1,3 +1,4 @@
+import json
 from collections.abc import Callable, Sequence
 
 from streaming import Stream, StreamingDataset
@@ -42,6 +43,15 @@ class StreamingT2IDataset(StreamingDataset):
             ret[f"image_{i}"] = transform(rgb)
 
         caption = sample[self.caption_key]
-        ret["caption"] = text_preprocessing(caption, self.clean_caption)
+        if isinstance(caption, str) and caption.strip().startswith("["):
+            try:
+                caption = json.loads(caption)
+            except json.JSONDecodeError:
+                pass
+        if isinstance(caption, list) and len(caption) > 1:
+            ret["caption"] = caption
+        else:
+            c = caption[0] if isinstance(caption, list) and caption else caption
+            ret["caption"] = text_preprocessing(c, self.clean_caption)[0]
         ret["sample"] = sample
         return ret

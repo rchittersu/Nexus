@@ -112,7 +112,6 @@ Nexus/
 │   │   └── utils.py            # Text preprocessing for captions
 │   └── utils/              # Device/dtype helpers
 └── datasets/prepare/sstk/  # Data prep scripts
-    ├── base.py             # Streaming dataloader builder
     ├── prepare.py          # Images → MDS
     ├── precompute.py       # MDS → latents + embeddings
     └── run.sh

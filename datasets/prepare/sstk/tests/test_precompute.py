@@ -17,18 +17,19 @@ except ImportError:
     torch = None
     HAS_CUDA = False
 
-# Project root for imports
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(PROJECT_ROOT))
+# Add sstk dir for imports (precompute.py is in parent of tests/)
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-# Import precompute - need to run from package context
-# We import parse_args directly; main needs accelerate/CUDA
-from datasets.prepare.sstk.precompute import parse_args
+from precompute import (
+    parse_args,
+    _caption_sample_weights,
+    _sample_caption,
+)
 
 
 def _get_precompute_main():
     """Lazy import of main to avoid loading heavy deps in unit tests."""
-    from datasets.prepare.sstk.precompute import main
+    from precompute import main
     return main
 
 
@@ -55,7 +56,7 @@ class TestParseArgs:
             assert args.seed == 42
             assert args.vae is True
             assert args.text_encoder is True
-            assert args.text_encoder_out_layers == [10, 20, 30]
+            assert args.text_encoder_out_layers == [9, 18, 27]
             assert args.max_sequence_length == 512
 
     def test_all_arguments_override_defaults(self):
@@ -75,6 +76,7 @@ class TestParseArgs:
             '--no_text_encoder',
             '--text_encoder_out_layers', '5', '15',
             '--max_sequence_length', '256',
+            '--caption_sample_weights', '0.7', '0.3',
         ]):
             args = parse_args()
             assert args.datadir == '/data/mds'
@@ -90,6 +92,7 @@ class TestParseArgs:
             assert args.text_encoder is False
             assert args.text_encoder_out_layers == [5, 15]
             assert args.max_sequence_length == 256
+            assert args.caption_sample_weights == [0.7, 0.3]
 
     def test_single_image_resolution(self):
         """Single image resolution is converted to list."""
@@ -105,6 +108,76 @@ class TestParseArgs:
         with patch.object(sys, 'argv', ['precompute.py']):
             with pytest.raises(SystemExit):
                 parse_args()
+
+    def test_caption_sample_weights_default_is_none(self):
+        """--caption_sample_weights defaults to None (uniform sampling)."""
+        with patch.object(sys, 'argv', ['precompute.py', '--datadir', '/data']):
+            args = parse_args()
+            assert args.caption_sample_weights is None
+
+    def test_caption_sample_weights_parsed(self):
+        """--caption_sample_weights parses comma-separated floats."""
+        with patch.object(sys, 'argv', [
+            'precompute.py', '--datadir', '/data',
+            '--caption_sample_weights', '0.5', '0.3', '0.2',
+        ]):
+            args = parse_args()
+            assert args.caption_sample_weights == [0.5, 0.3, 0.2]
+
+
+class TestCaptionSampleWeights:
+    """Tests for _caption_sample_weights helper."""
+
+    def test_uniform_when_none(self):
+        """Returns uniform weights when weights_arg is None."""
+        w = _caption_sample_weights(3, None)
+        np.testing.assert_array_almost_equal(w, [1 / 3, 1 / 3, 1 / 3])
+
+    def test_uniform_when_empty(self):
+        """Returns uniform weights when weights_arg is empty."""
+        w = _caption_sample_weights(2, [])
+        np.testing.assert_array_almost_equal(w, [0.5, 0.5])
+
+    def test_exact_match(self):
+        """Weights match when length equals n."""
+        w = _caption_sample_weights(3, [0.5, 0.3, 0.2])
+        np.testing.assert_array_almost_equal(w, [0.5, 0.3, 0.2])
+
+    def test_extend_with_uniform(self):
+        """Extra indices get equal weight when weights_arg has fewer entries."""
+        w = _caption_sample_weights(4, [0.5, 0.5])
+        # First two: 0.5, 0.5; remaining two get 1 each, normalized
+        assert len(w) == 4
+        np.testing.assert_almost_equal(w.sum(), 1.0)
+        assert w[0] == 0.5
+        assert w[1] == 0.5
+        assert w[2] == w[3]
+
+    def test_truncate_when_more_weights_than_captions(self):
+        """Excess weights are truncated."""
+        w = _caption_sample_weights(2, [0.3, 0.2, 0.5])
+        np.testing.assert_array_almost_equal(w, [0.6, 0.4])  # 0.3/(0.3+0.2), 0.2/(0.3+0.2)
+
+
+class TestSampleCaption:
+    """Tests for _sample_caption helper."""
+
+    def test_samples_by_weights(self):
+        """Samples index according to weights (with deterministic rng)."""
+        rng = np.random.default_rng(42)
+        captions = ['a', 'b', 'c']
+        weights = np.array([1.0, 0.0, 0.0])  # Always pick index 0
+        result = _sample_caption(captions, weights, rng, clean=False)
+        assert result == 'a'
+
+    def test_returns_preprocessed_string(self):
+        """Returns a single preprocessed string from text_preprocessing."""
+        rng = np.random.default_rng(0)
+        captions = ['Hello World']
+        weights = np.array([1.0])
+        result = _sample_caption(captions, weights, rng, clean=False)
+        assert isinstance(result, str)
+        assert 'hello' in result.lower()
 
 
 class TestColumnsBuilding:
@@ -234,12 +307,11 @@ class TestPrecomputeIntegration:
 
         assert mds_dir.exists()
 
-        # 3. Run precompute via subprocess (accelerate launch)
-        env = os.environ.copy()
-        env['PYTHONPATH'] = f"{PROJECT_ROOT}:{env.get('PYTHONPATH', '')}"
+        # 3. Run precompute via subprocess (accelerate launch script)
+        precompute_script = Path(__file__).resolve().parents[1] / 'precompute.py'
         cmd = [
             'accelerate', 'launch', '--num_processes', '1',
-            '-m', 'datasets.prepare.sstk.precompute',
+            str(precompute_script),
             '--datadir', str(mds_dir),
             '--savedir', str(latents_dir),
             '--image_resolutions', '512',
@@ -248,7 +320,7 @@ class TestPrecomputeIntegration:
             '--model_dtype', 'float16',
             '--save_dtype', 'float16',
         ]
-        result = subprocess.run(cmd, cwd=str(PROJECT_ROOT), env=env, capture_output=True, text=True, timeout=300)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if result.returncode != 0:
             pytest.skip(f'Precompute failed (model may not be cached): {result.stderr[:500]}')
 
@@ -292,12 +364,12 @@ class TestPrecomputeIntegration:
             text_embeds_bytes = sample['text_embeds']
             latent_bytes = sample['latents_512']
 
-            # Re-encode caption
+            # Re-encode caption (must match precompute default [9, 18, 27])
             with torch.no_grad():
                 re_embeds, _ = pipeline.encode_prompt(
                     prompt=[caption],
                     max_sequence_length=512,
-                    text_encoder_out_layers=[10, 20, 30],
+                    text_encoder_out_layers=[9, 18, 27],
                 )
             re_embeds_np = re_embeds.cpu().float().numpy()
 

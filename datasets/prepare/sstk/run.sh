@@ -1,21 +1,25 @@
 #!/usr/bin/env bash
 #
-# Run SSTK dataset preparation: prepare.py (images -> MDS) then precompute.py (MDS -> latents).
+# Run SSTK dataset preparation: prepare (images -> MDS) then precompute (MDS -> latents).
+# Standalone scripts. Set DATAROOT or edit vars below to change data paths.
 #
 # Usage: ./run.sh [prepare|precompute|all]
 #
 
 set -e
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+
+# Configure data paths (edit below or set DATAROOT env)
+DATAROOT="${DATAROOT:-./sa1b}"
+IMAGES_TXT="${DATAROOT}/image_paths.txt"
+MDS_DIR="${DATAROOT}/mds"
+LATENTS_DIR="${DATAROOT}/mds_latents_flux2"
 
 run_prepare() {
-    echo "=== Running prepare.py ==="
-    cd "$PROJECT_ROOT"
+    echo "=== Running prepare ==="
     python "$SCRIPT_DIR/prepare.py" \
-        --images_txt ./sa1b/image_paths.txt \
-        --local_mds_dir ./sa1b/mds/ \
+        --images_txt "$IMAGES_TXT" \
+        --local_mds_dir "${MDS_DIR}/" \
         --num_proc 16 \
         --seed 42 \
         --size 100000 \
@@ -25,13 +29,11 @@ run_prepare() {
 }
 
 run_precompute() {
-    echo "=== Running precompute.py ==="
-    cd "$PROJECT_ROOT"
-    export PYTHONPATH="$PROJECT_ROOT:$PYTHONPATH"
+    echo "=== Running precompute ==="
     accelerate launch --multi_gpu --num_processes 8 \
-        -m datasets.prepare.sstk.precompute \
-        --datadir ./sa1b/mds/ \
-        --savedir ./sa1b/mds_latents_flux2/ \
+        "$SCRIPT_DIR/precompute.py" \
+        --datadir "${MDS_DIR}/" \
+        --savedir "${LATENTS_DIR}/" \
         --image_resolutions 512 1024 \
         --pretrained_model_name_or_path black-forest-labs/FLUX.2-klein-base-4B \
         --batch_size 32 \
