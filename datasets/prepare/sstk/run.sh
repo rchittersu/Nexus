@@ -35,7 +35,7 @@ run_precompute() {
         --image_resolutions 512 1024 \
         --pretrained_model_name_or_path black-forest-labs/FLUX.2-klein-base-4B \
         --batch_size 32 \
-        --seed 2024 \
+        --seed 42 \
         --model_dtype bfloat16 \
         --save_dtype float16
 }

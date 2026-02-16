@@ -6,7 +6,7 @@ import numpy as np
 import torch
 from torch.nn.utils.rnn import pad_sequence
 from accelerate import Accelerator
-from diffusers import AutoencoderKLFlux2
+from diffusers import AutoencoderKLFlux2, Flux2KleinPipeline
 from transformers import Qwen3ForCausalLM, Qwen2TokenizerFast
 from diffusers.models.modeling_outputs import AutoencoderKLOutput
 from streaming import MDSWriter
@@ -109,6 +109,19 @@ def parse_args() -> ArgumentParser:
         action="store_false",
         help="Disable text encoder encoding.",
     )
+    parser.add_argument(
+        "--text_encoder_out_layers",
+        type=int,
+        nargs="+",
+        default=[10, 20, 30],
+        help="Text encoder hidden layers to compute the final text embeddings.",
+    )
+    parser.add_argument(
+        "--max_sequence_length",
+        type=int,
+        default=512,
+        help="Maximum sequence length for text encoding.",
+    )
     args = parser.parse_args()
     if isinstance(args.image_resolutions, int):
         args.image_resolutions = [args.image_resolutions]
@@ -154,6 +167,15 @@ def main(args: ArgumentParser) -> None:
         subfolder="tokenizer",
     )
 
+    # initialise text encoding pipeline
+    text_encoding_pipeline = Flux2KleinPipeline.from_pretrained(
+        args.pretrained_model_name_or_path,
+        vae=None,
+        transformer=None,
+        tokenizer=tokenizer,
+        text_encoder=text_encoder,
+    )
+
     caption_key = "caption"
     image_key = "image"
     dataloader = build_streaming_sstk_t2i_dataloader(
@@ -184,8 +206,8 @@ def main(args: ArgumentParser) -> None:
         for size in args.image_resolutions:
             columns[f'latents_{size}'] = 'bytes'
     if args.text_encoder:
-        columns['text_feat'] = 'bytes'
-        columns['text_mask'] = 'bytes'
+        columns['text_embeds'] = 'bytes'
+        columns['text_ids'] = 'bytes'
     if args.save_images:
         columns["image"] = 'jpeg'
 
@@ -198,7 +220,6 @@ def main(args: ArgumentParser) -> None:
         max_workers=64,
     )
 
-    pad_token_id = tokenizer.pad_token_id or tokenizer.eos_token_id
 
     for batch in tqdm(dataloader):
         # Stack images for each resolution
@@ -207,22 +228,7 @@ def main(args: ArgumentParser) -> None:
             for idx in range(len(args.image_resolutions))
         ]
 
-        # Pad input_ids for batching (batch has list of variable-length tensors)
-        input_ids_list = [x.squeeze(0) if x.dim() > 1 else x for x in batch["input_ids"]]
-        input_ids = pad_sequence(
-            input_ids_list,
-            batch_first=True,
-            padding_value=pad_token_id,
-        ).to(device)
-        attention_mask = (input_ids != pad_token_id).long().to(device)
-        if "attention_mask" in batch:
-            # Use dataset attention_mask if available, pad with 0
-            am_list = [x.squeeze(0) if x.dim() > 1 else x for x in batch["attention_mask"]]
-            attention_mask = pad_sequence(am_list, batch_first=True, padding_value=0).to(
-                device
-            )
-
-        batch_size = images[0].shape[0] if images else input_ids.shape[0]
+        batch_size = images[0].shape[0]
 
         try:
             with torch.no_grad():
@@ -236,40 +242,31 @@ def main(args: ArgumentParser) -> None:
                             lat = (
                                 latent_dist.latent_dist.sample()
                             ).to(DATA_TYPES[args.save_dtype])
-                            latents_dict[size] = lat
+                            latents_dict[size] = lat.detach().cpu().numpy()
 
                     # Encode text with text encoder
-                    conditioning = None
+                    prompt_embeds = None
+                    text_ids = None
                     if args.text_encoder:
-                        outputs = text_encoder(
-                            input_ids=input_ids,
-                            attention_mask=attention_mask,
-                            output_hidden_states=True,
-                            return_dict=True,
+                        prompt_embeds, text_ids = text_encoding_pipeline.encode_prompt(
+                            prompt=batch["caption"],  
+                            max_sequence_length=args.max_sequence_length,
+                            text_encoder_out_layers=args.text_encoder_out_layers,
                         )
-                        conditioning = outputs.hidden_states[-1].to(DATA_TYPES[args.save_dtype])
-
-            # Convert to numpy for serialization
-            latents_np = {}
-            for size, lat in latents_dict.items():
-                latents_np[size] = lat.detach().cpu().numpy()
-
-            conditioning_np = None
-            if conditioning is not None:
-                conditioning_np = conditioning.detach().cpu().numpy()
-                text_mask_np = attention_mask.detach().cpu().numpy()
+                        prompt_embeds = prompt_embeds.to(DATA_TYPES[args.save_dtype]).detach().cpu().numpy()
+                        text_ids = text_ids.to(torch.int8).detach().cpu().numpy()
 
             # Write each sample to MDS
             for i in range(batch_size):
                 mds_sample = {
-                    "caption": batch["sample"][i].get("caption", batch["caption"][i]),
+                    "caption": batch["caption"][i],
                 }
-                if args.text_encoder and conditioning_np is not None:
-                    mds_sample["text_feat"] = np.reshape(conditioning_np[i], -1).tobytes()
-                    mds_sample["text_mask"] = text_mask_np[i].tobytes()
+                if args.text_encoder:
+                    mds_sample["text_embeds"] = prompt_embeds[i].tobytes()
+                    mds_sample["text_ids"] = text_ids[i].tobytes()
                 if args.vae:
                     for size in args.image_resolutions:
-                        mds_sample[f"latents_{size}"] = latents_np[size][i].tobytes()
+                        mds_sample[f"latents_{size}"] = latents_dict[size][i].tobytes()
                 if args.save_images:
                     mds_sample["image"] = batch["sample"][i][image_key]
                 writer.write(mds_sample)
