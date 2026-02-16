@@ -61,10 +61,10 @@ Then `from nexus.train import main` or `import nexus`.
 
 ```bash
 pip install -e .
-pytest tests/ -v
+pytest -v
 ```
 
-Unit tests cover config (load, extends, ns_to_kwargs), losses (MSE, L1, Huber, LogCosh), and data (collate).
+Unit tests cover config (load, extends, ns_to_kwargs), losses (MSE, L1, Huber, LogCosh), data (collate), and dataset prep (prepare, precompute).
 
 Accelerate config:
 
@@ -96,11 +96,15 @@ Nexus/
 │   │   └── validation.py  # Image gen + tracker logs
 │   ├── models/
 │   │   └── transformer_wrapper.py   # Generic LoRA/full wrapper
-│   └── data/
-│       └── precomputed_sstk.py     # MDS dataset
-└── datasets/prepare/sstk/          # Data prep scripts
-    ├── prepare.py         # Images → MDS
-    ├── precompute.py      # MDS → latents + embeddings
+│   ├── data/
+│   │   ├── precomputed_sstk.py  # MDS dataset
+│   │   ├── t2i_dataset.py       # Streaming T2I (used by precompute)
+│   │   └── utils.py            # Text preprocessing for captions
+│   └── utils/              # Device/dtype helpers
+└── datasets/prepare/sstk/   # Data prep scripts
+    ├── base.py             # Streaming dataloader builder
+    ├── prepare.py          # Images → MDS
+    ├── precompute.py       # MDS → latents + embeddings
     └── run.sh
 ```
 
@@ -157,7 +161,7 @@ cd datasets/prepare/sstk
 ./run.sh prepare
 ```
 
-Edit `run.sh` or set env vars: `IMAGES_TXT`, `LOCAL_MDS_DIR`, `SIZE`, etc.
+Edit `run.sh` to change paths and parameters (e.g. `--images_txt`, `--local_mds_dir`, `--size`, `--datadir`, `--savedir`).
 
 ### 2. Precompute — MDS → latents + embeddings
 
