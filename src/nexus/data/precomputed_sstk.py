@@ -6,9 +6,6 @@ Produced by datasets/prepare/sstk/precompute.py. Schema: caption, latents_512
 running VAE or text encoder during training.
 """
 
-from pathlib import Path
-from typing import Dict, List, Optional
-
 import numpy as np
 import torch
 from streaming import StreamingDataset
@@ -85,7 +82,7 @@ class PrecomputedSSTKDataset(StreamingDataset):
         self.latent_dtype = latent_dtype
         self.latent_key = f"latents_{resolution}"
 
-    def __getitem__(self, index: int) -> Dict:
+    def __getitem__(self, index: int) -> dict:
         sample = super().__getitem__(index)
 
         latent_bytes = sample[self.latent_key]
@@ -117,7 +114,7 @@ class PrecomputedSSTKDataset(StreamingDataset):
         }
 
 
-def collate_precomputed(batch: List[Dict]) -> Dict:
+def collate_precomputed(batch: list[dict]) -> dict:
     """Collate precomputed batch for training."""
     return {
         "latents": torch.stack([b["latents"] for b in batch]),

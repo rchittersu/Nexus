@@ -8,7 +8,6 @@ import importlib
 import os
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
 
 
 def ns_to_kwargs(ns: SimpleNamespace | None, **overrides) -> dict:
@@ -44,9 +43,7 @@ def _deep_namespace(d: dict) -> SimpleNamespace:
     """Recursively convert dict to SimpleNamespace for dot access."""
     out = {}
     for k, v in d.items():
-        if isinstance(v, dict) and not any(
-            str(kk).startswith("_") for kk in v.keys()
-        ):
+        if isinstance(v, dict) and not any(str(kk).startswith("_") for kk in v):
             out[k] = _deep_namespace(v)
         else:
             out[k] = v
@@ -89,7 +86,7 @@ def load_config(path: str | Path) -> SimpleNamespace:
             if hasattr(cfg.model, component):
                 comp = getattr(cfg.model, component)
                 if hasattr(comp, "class_name"):
-                    setattr(comp, "_class", _resolve_class(comp.class_name))
+                    comp._class = _resolve_class(comp.class_name)
 
     # Resolve distillation source_transformer if present
     if hasattr(cfg, "distillation") and hasattr(cfg.distillation, "source_transformer"):

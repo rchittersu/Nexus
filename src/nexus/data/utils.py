@@ -1,36 +1,49 @@
+"""
+Text preprocessing utilities for image captions.
+
+Used by StreamingT2IDataset during dataset preparation (precompute). Supports
+optional clean_caption mode using ftfy and BeautifulSoup for HTML/Unicode
+normalization.
+"""
+
+import html
 import logging
 import re
-import urllib.parse as ul
+import urllib.parse
+
 import ftfy
 from bs4 import BeautifulSoup
-import html
-
 from diffusers.utils import (
     BACKENDS_MAPPING,
     is_bs4_available,
-    is_ftfy_available
+    is_ftfy_available,
 )
-logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
+logger = logging.getLogger(__name__)
 
+# Regex for punctuations to strip (from diffusers IF pipeline)
 bad_punct_regex = re.compile(
-        r"["
-        + "#®•©™&@·º½¾¿¡§~"
-        + r"\)"
-        + r"\("
-        + r"\]"
-        + r"\["
-        + r"\}"
-        + r"\{"
-        + r"\|"
-        + "\\"
-        + r"\/"
-        + r"\*"
-        + r"]{1,}"
-    )  # noqa
+    r"["
+    + "#®•©™&@·º½¾¿¡§~"
+    + r"\)"
+    + r"\("
+    + r"\]"
+    + r"\["
+    + r"\}"
+    + r"\{"
+    + r"\|"
+    + "\\"
+    + r"\/"
+    + r"\*"
+    + r"]{1,}"
+)  # noqa
 
-# Copied from diffusers.pipelines.deepfloyd_if.pipeline_if.IFPipeline._text_preprocessing
-def text_preprocessing(text, clean=False):
+
+def text_preprocessing(text: str | list, clean: bool = False) -> list:
+    """
+    Preprocess caption text(s). If clean=True, applies clean_caption (HTML/Unicode).
+    Returns a list of processed strings (one per input text).
+    """
     if clean and not is_bs4_available():
         logger.warning(BACKENDS_MAPPING["bs4"][-1].format("Setting `clean=True`"))
         logger.warning("Setting `clean` to False...")
@@ -45,19 +58,19 @@ def text_preprocessing(text, clean=False):
         text = [text]
 
     def process(text: str):
-        if clean:
-            text = clean_caption(text)
-        else:
-            text = text.lower().strip()
+        text = clean_caption(text) if clean else text.lower().strip()
         return text
 
     return [process(t) for t in text]
 
 
-# Copied from diffusers.pipelines.deepfloyd_if.pipeline_if.IFPipeline._clean_caption
-def clean_caption(caption):
+def clean_caption(caption: str) -> str:
+    """
+    Normalize caption: unquote, lowercase, strip URLs/HTML/CJK, fix punctuation.
+    Adapted from diffusers IF pipeline.
+    """
     caption = str(caption)
-    caption = ul.unquote_plus(caption)
+    caption = urllib.parse.unquote_plus(caption)
     caption = caption.strip().lower()
     caption = re.sub("<person>", "person", caption)
     # urls:

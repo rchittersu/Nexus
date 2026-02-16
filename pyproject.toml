@@ -20,6 +20,7 @@ dependencies = [
     "pyyaml",
     "safetensors",
     "pytest",
+    "ruff>=0.4.0",
 ]
 
 [tool.setuptools.packages.find]
@@ -34,3 +35,28 @@ testpaths = ["tests", "datasets/prepare/sstk/tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+src = ["src", "tests", "datasets"]
+exclude = []
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "F",      # pyflakes
+    "I",      # isort
+    "B",      # bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "ARG",    # unused args
+    "SIM",    # simplify
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ARG", "S101"]  # assert ok in tests
+"datasets/prepare/**" = ["ARG"]
+"src/nexus/train/losses.py" = ["ARG002"]  # **kwargs required by base class interface
+
+[tool.ruff.format]
+quote-style = "double"

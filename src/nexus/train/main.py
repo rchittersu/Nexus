@@ -1,11 +1,13 @@
 """
 Flux.2 Klein training on precomputed SSTK MDS data.
 
-Config-driven via YAML. Usage:
-  accelerate launch -m nexus.train.main --config configs/klein4b/run1.yaml
-  # Overrides:
-  accelerate launch -m nexus.train.main --config configs/klein4b/run1.yaml \\
-    --precomputed_data_dir /path/to/mds --output_dir ./out
+Config-driven via YAML. Entry point for LoRA or full fine-tuning of Flux.2
+transformers on precomputed VAE latents and text embeddings.
+
+Usage:
+    accelerate launch -m nexus.train.main --config configs/klein4b/run1.yaml
+    accelerate launch -m nexus.train.main --config configs/klein4b/run1.yaml \\
+        --precomputed_data_dir /path/to/mds --output_dir ./out
 """
 
 import copy
@@ -15,20 +17,18 @@ import os
 import shutil
 from pathlib import Path
 
+import diffusers
 import torch
 import transformers
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration, set_seed
-from tqdm.auto import tqdm
-
-import diffusers
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import cast_training_params
 from diffusers.utils import check_min_version
 from diffusers.utils.torch_utils import is_compiled_module
-
 from peft import LoraConfig
+from tqdm.auto import tqdm
 
 from .config import ns_to_kwargs, parse_args
 from .losses import _loss_uses_distillation
@@ -40,9 +40,65 @@ logger = get_logger(__name__)
 
 
 def _uses_mlflow(report_to) -> bool:
-    return report_to == "mlflow" or (
-        isinstance(report_to, list) and "mlflow" in report_to
-    )
+    """Return True if MLflow is in the report_to list or string."""
+    return report_to == "mlflow" or (isinstance(report_to, list) and "mlflow" in report_to)
+
+
+def _build_loss_fn(cfg):
+    """Build loss from config, resolving MetaLoss nested losses and class references."""
+    import importlib
+
+    loss_cfg = cfg.loss
+    loss_class = getattr(loss_cfg, "_class", None)
+    if loss_class is None:
+        from .losses import MSELoss
+
+        return MSELoss()
+
+    loss_kwargs = ns_to_kwargs(getattr(loss_cfg, "kwargs", None))
+    losses_list = loss_kwargs.pop("losses", None)
+
+    if losses_list is not None:
+        resolved = []
+        for item in losses_list:
+            cls = getattr(item, "_class", None) or (
+                item.get("_class") if isinstance(item, dict) else None
+            )
+            if cls is None and (
+                hasattr(item, "class_name") or (isinstance(item, dict) and "class_name" in item)
+            ):
+                cn = getattr(item, "class_name", None) or item["class_name"]
+                mod_path, cls_name = cn.rsplit(":", 1)
+                cls = getattr(importlib.import_module(mod_path), cls_name)
+
+            if cls is not None:
+                if isinstance(item, dict):
+                    nested = item.get("kwargs")
+                    if nested is not None:
+                        ns_d = nested if isinstance(nested, dict) else vars(nested)
+                        ikw = {k: v for k, v in ns_d.items() if not str(k).startswith("_")}
+                    else:
+                        ikw = {
+                            k: v
+                            for k, v in item.items()
+                            if k not in ("class_name", "scale", "name", "_class")
+                            and not str(k).startswith("_")
+                        }
+                else:
+                    ikw = ns_to_kwargs(getattr(item, "kwargs", None))
+                scale = (
+                    getattr(item, "scale", 1.0)
+                    if not isinstance(item, dict)
+                    else item.get("scale", 1.0)
+                )
+                name = (
+                    getattr(item, "name", None) if not isinstance(item, dict) else item.get("name")
+                )
+                name = name or cls.__name__
+                resolved.append((cls(**ikw), scale, name))
+        loss_kwargs["losses"] = resolved
+
+    return loss_class(**loss_kwargs)
 
 
 def _prune_old_checkpoints(output_dir: str, limit: int) -> None:
@@ -60,6 +116,7 @@ def main(args=None):
     """Run Flux.2 Klein LoRA/full training on precomputed SSTK data."""
     cfg = parse_args(args)
 
+    # --- Config & logging ---
     config_path = getattr(cfg, "_config_path", None)
     logger.info("Config: %s", config_path or "(unknown)")
 
@@ -73,10 +130,9 @@ def main(args=None):
     train_mode = getattr(cfg, "train_mode", "lora")
     pretrained_path = model_cfg.pretrained_model_name_or_path
 
+    # --- Accelerator & MLflow ---
     logging_dir = Path(cfg.output_dir, cfg.logging_dir)
-    proj_config = ProjectConfiguration(
-        project_dir=cfg.output_dir, logging_dir=str(logging_dir)
-    )
+    proj_config = ProjectConfiguration(project_dir=cfg.output_dir, logging_dir=str(logging_dir))
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
 
     # MLflow local: set tracking URI and use MLflowTracker with output_dir
@@ -84,19 +140,22 @@ def main(args=None):
     if _uses_mlflow(report_to):
         mlflow_dir = Path(cfg.output_dir).resolve() / "mlruns"
         mlflow_dir.mkdir(parents=True, exist_ok=True)
-        tracking_uri = getattr(
-            getattr(cfg, "mlflow", None), "tracking_uri", None
-        ) or mlflow_dir.as_uri()
+        tracking_uri = (
+            getattr(getattr(cfg, "mlflow", None), "tracking_uri", None) or mlflow_dir.as_uri()
+        )
         os.environ.setdefault("MLFLOW_TRACKING_URI", tracking_uri)
         from accelerate.tracking import MLflowTracker
+
         mlflow_cfg = getattr(cfg, "mlflow", None)
         mlflow_tracker = MLflowTracker(
             experiment_name=getattr(mlflow_cfg, "experiment_name", "nexus-flux2"),
             logging_dir=str(mlflow_dir),
         )
-        log_with = mlflow_tracker if report_to == "mlflow" else [
-            t for t in report_to if t != "mlflow"
-        ] + [mlflow_tracker]
+        log_with = (
+            mlflow_tracker
+            if report_to == "mlflow"
+            else [t for t in report_to if t != "mlflow"] + [mlflow_tracker]
+        )
     else:
         log_with = report_to
 
@@ -127,7 +186,7 @@ def main(args=None):
     if getattr(cfg, "seed", None) is not None:
         set_seed(cfg.seed)
 
-    # Determine weight dtype from mixed_precision
+    # --- Model loading ---
     weight_dtype = torch.float32
     mp = getattr(cfg, "mixed_precision", None)
     if mp == "fp16":
@@ -262,9 +321,7 @@ def main(args=None):
     learning_rate = train_cfg.learning_rate
     if train_cfg.scale_lr:
         learning_rate *= (
-            train_cfg.gradient_accumulation_steps
-            * train_cfg.batch_size
-            * accelerator.num_processes
+            train_cfg.gradient_accumulation_steps * train_cfg.batch_size * accelerator.num_processes
         )
 
     if mp == "fp16":
@@ -279,7 +336,7 @@ def main(args=None):
         **opt_kwargs,
     )
 
-    # Build dataset and dataloader from YAML config
+    # --- Dataset & dataloader ---
     ds_kwargs = ns_to_kwargs(
         cfg.dataset.kwargs,
         batch_size=train_cfg.batch_size,
@@ -292,6 +349,7 @@ def main(args=None):
     collate_fn = cfg.collate._fn if hasattr(cfg.collate, "_fn") else None
     if collate_fn is None:
         from ..data.precomputed_sstk import collate_precomputed
+
         collate_fn = collate_precomputed
 
     train_dataloader = torch.utils.data.DataLoader(
@@ -308,9 +366,7 @@ def main(args=None):
     num_updates = math.ceil(len_dl / train_cfg.gradient_accumulation_steps)
     max_steps_cfg = getattr(train_cfg, "max_steps", None)
     num_training_steps = (
-        train_cfg.num_epochs * num_updates
-        if max_steps_cfg is None
-        else max_steps_cfg
+        train_cfg.num_epochs * num_updates if max_steps_cfg is None else max_steps_cfg
     )
 
     lr_scheduler = get_scheduler(
@@ -326,13 +382,9 @@ def main(args=None):
         transformer, optimizer, train_dataloader, lr_scheduler
     )
 
-    num_updates_per_epoch = math.ceil(
-        len(train_dataloader) / train_cfg.gradient_accumulation_steps
-    )
+    num_updates_per_epoch = math.ceil(len(train_dataloader) / train_cfg.gradient_accumulation_steps)
     max_steps = (
-        train_cfg.num_epochs * num_updates_per_epoch
-        if max_steps_cfg is None
-        else max_steps_cfg
+        train_cfg.num_epochs * num_updates_per_epoch if max_steps_cfg is None else max_steps_cfg
     )
     num_epochs = math.ceil(max_steps / num_updates_per_epoch)
 
@@ -351,46 +403,11 @@ def main(args=None):
         )
         accelerator.init_trackers(exp_name, config=config_dict)
 
+    # --- Loss & validation ---
     loss_cfg = cfg.loss
-    loss_class = getattr(loss_cfg, "_class", None)
-    if loss_class is None:
-        from .losses import MSELoss
-        loss_fn = MSELoss()
-    else:
-        loss_kwargs = ns_to_kwargs(getattr(loss_cfg, "kwargs", None))
-        # Resolve MetaLoss losses list: [(instance, scale), ...]
-        losses_list = loss_kwargs.pop("losses", None)
-        if losses_list is not None:
-            import importlib
-            resolved = []
-            for item in losses_list:
-                cls = getattr(item, "_class", None) or (
-                    item.get("_class") if isinstance(item, dict) else None
-                )
-                if cls is None and (hasattr(item, "class_name") or (isinstance(item, dict) and "class_name" in item)):
-                    cn = getattr(item, "class_name", None) or item["class_name"]
-                    mod_path, cls_name = cn.rsplit(":", 1)
-                    cls = getattr(importlib.import_module(mod_path), cls_name)
-                if cls is not None:
-                    if isinstance(item, dict):
-                        nested = item.get("kwargs")
-                        if nested is not None:
-                            ikw = {k: v for k, v in (nested if isinstance(nested, dict) else vars(nested)).items()
-                                   if not str(k).startswith("_")}
-                        else:
-                            ikw = {k: v for k, v in item.items()
-                                   if k not in ("class_name", "scale", "name", "_class") and not str(k).startswith("_")}
-                    else:
-                        ikw = ns_to_kwargs(getattr(item, "kwargs", None))
-                    scale = getattr(item, "scale", 1.0) if not isinstance(item, dict) else item.get("scale", 1.0)
-                    name = getattr(item, "name", None) if not isinstance(item, dict) else item.get("name")
-                    if name is None:
-                        name = cls.__name__
-                    resolved.append((cls(**ikw), scale, name))
-            loss_kwargs["losses"] = resolved
-        loss_fn = loss_class(**loss_kwargs)
+    loss_fn = _build_loss_fn(cfg)
 
-    # Check: when distillation is enabled, loss must use distillation (DistillationLoss or MetaLoss containing it)
+    # Distillation config and loss must match (both enabled or both disabled)
     distillation_enabled = (
         distillation_cfg is not None
         and hasattr(distillation_cfg, "source_transformer")
@@ -413,9 +430,7 @@ def main(args=None):
             "Add distillation.source_transformer with pretrained_model_name_or_path."
         )
     total_bs = (
-        train_cfg.batch_size
-        * accelerator.num_processes
-        * train_cfg.gradient_accumulation_steps
+        train_cfg.batch_size * accelerator.num_processes * train_cfg.gradient_accumulation_steps
     )
     logger.info("***** Running training (precomputed SSTK) *****")
     logger.info(f"  Data = {ds_kwargs.get('local')}")
@@ -430,11 +445,7 @@ def main(args=None):
     if resume:
         path = resume
         if path == "latest":
-            dirs = [
-                d
-                for d in os.listdir(cfg.output_dir)
-                if d.startswith("checkpoint")
-            ]
+            dirs = [d for d in os.listdir(cfg.output_dir) if d.startswith("checkpoint")]
             dirs = sorted(dirs, key=lambda x: int(x.split("-")[1]))
             path = dirs[-1] if dirs else None
         else:
@@ -454,9 +465,9 @@ def main(args=None):
         disable=not accelerator.is_local_main_process,
     )
 
-    for epoch in range(first_epoch, num_epochs):
+    for _epoch in range(first_epoch, num_epochs):
         transformer.train()
-        for step, batch in enumerate(train_dataloader):
+        for _step, batch in enumerate(train_dataloader):
             batch = {
                 "latents": batch["latents"].to(accelerator.device, dtype=weight_dtype),
                 "text_embeds": batch["text_embeds"].to(accelerator.device, dtype=weight_dtype),
@@ -528,13 +539,13 @@ def main(args=None):
                         variant=model_cfg.variant,
                     )
 
-                if (accelerator.is_main_process or is_fsdp) and global_step % cfg.checkpointing_steps == 0:
+                if (
+                    accelerator.is_main_process or is_fsdp
+                ) and global_step % cfg.checkpointing_steps == 0:
                     limit = getattr(cfg, "checkpoints_total_limit", None)
                     if limit is not None:
                         _prune_old_checkpoints(cfg.output_dir, limit)
-                    save_path = os.path.join(
-                        cfg.output_dir, f"checkpoint-{global_step}"
-                    )
+                    save_path = os.path.join(cfg.output_dir, f"checkpoint-{global_step}")
                     accelerator.save_state(save_path)
                     logger.info(f"Saved state to {save_path}")
 

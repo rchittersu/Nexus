@@ -75,7 +75,9 @@ class HuberLoss(FlowMatchingLossBase):
     ) -> torch.Tensor:
         err = pred.float() - target.float()
         abs_err = err.abs()
-        quad = torch.where(abs_err <= self.delta, 0.5 * err**2, self.delta * (abs_err - 0.5 * self.delta))
+        quad = torch.where(
+            abs_err <= self.delta, 0.5 * err**2, self.delta * (abs_err - 0.5 * self.delta)
+        )
         weighted = weighting.float() * quad
         return weighted.reshape(target.shape[0], -1).mean(1).mean()
 
@@ -126,14 +128,15 @@ class MetaLoss(FlowMatchingLossBase):
 
     def __init__(
         self,
-        losses: list[tuple["FlowMatchingLossBase", float]] | list[tuple["FlowMatchingLossBase", float, str]],
+        losses: list[tuple["FlowMatchingLossBase", float]]
+        | list[tuple["FlowMatchingLossBase", float, str]],
     ):
         """
         Args:
             losses: List of (loss_instance, scale) or (loss_instance, scale, name).
                     name is used for logging; defaults to type(loss_instance).__name__
         """
-        self.losses: list[tuple["FlowMatchingLossBase", float, str]] = []
+        self.losses: list[tuple[FlowMatchingLossBase, float, str]] = []
         for item in losses:
             if len(item) == 3:
                 self.losses.append(item)
@@ -151,9 +154,7 @@ class MetaLoss(FlowMatchingLossBase):
         total = pred.new_tensor(0.0)
         breakdown: dict[str, float] = {}
         for loss_fn, scale, name in self.losses:
-            val = loss_fn(
-                pred=pred, target=target, weighting=weighting, **kwargs
-            )
+            val = loss_fn(pred=pred, target=target, weighting=weighting, **kwargs)
             scaled = scale * val
             total = total + scaled
             breakdown[name] = scaled.detach().item()
@@ -165,9 +166,7 @@ def _loss_uses_distillation(loss_fn: FlowMatchingLossBase) -> bool:
     if type(loss_fn).__name__ == "DistillationLoss":
         return True
     if type(loss_fn).__name__ == "MetaLoss":
-        return any(
-            _loss_uses_distillation(l) for l, _, _ in loss_fn.losses
-        )
+        return any(_loss_uses_distillation(loss_inst) for loss_inst, _, _ in loss_fn.losses)
     return False
 
 

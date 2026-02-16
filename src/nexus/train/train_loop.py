@@ -5,7 +5,6 @@ Training step: flow-matching loss on precomputed latents + text embeddings.
 from typing import Any
 
 import torch
-
 from diffusers import Flux2KleinPipeline
 from diffusers.training_utils import (
     compute_density_for_timestep_sampling,
@@ -123,9 +122,7 @@ def training_step_precomputed(
                 teacher_pred, model_input_ids
             )
 
-    weighting = compute_loss_weighting_for_sd3(
-        weighting_scheme=weighting_scheme, sigmas=sigmas
-    )
+    weighting = compute_loss_weighting_for_sd3(weighting_scheme=weighting_scheme, sigmas=sigmas)
     target = noise - model_input
 
     return loss_fn(

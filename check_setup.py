@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Check that required packages are installed. Warns on missing deps; does not install.
-Run: python scripts/check_setup.py
+Run: python check_setup.py
 """
 
 REQUIRED = [

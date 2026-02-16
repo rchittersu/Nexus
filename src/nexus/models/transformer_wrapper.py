@@ -6,15 +6,15 @@ Component name (e.g. "transformer", "unet") is configurable.
 """
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Literal, Optional, Type
+from typing import Any, Literal
 
 import torch
-from peft import LoraConfig, get_peft_model_state_dict
-
 from diffusers.training_utils import _collate_lora_metadata, cast_training_params
 from diffusers.utils import convert_unet_state_dict_to_peft
 from diffusers.utils.torch_utils import is_compiled_module
+from peft import LoraConfig, get_peft_model_state_dict
 
 logger = logging.getLogger(__name__)
 
@@ -31,11 +31,11 @@ class TransformerWrapper(torch.nn.Module):
         self,
         transformer: torch.nn.Module,
         pretrained_path: str,
-        transformer_cls: Type,
+        transformer_cls: type,
         subfolder: str = "transformer",
         mode: TrainMode = "lora",
-        lora_config: Optional[LoraConfig] = None,
-        pipeline_cls: Optional[Type] = None,
+        lora_config: LoraConfig | None = None,
+        pipeline_cls: type | None = None,
         component_name: str = "transformer",
     ):
         """
@@ -78,7 +78,7 @@ class TransformerWrapper(torch.nn.Module):
     def get_save_hook(
         self,
         accelerator: Any,
-        transformer_cls: Type,
+        transformer_cls: type,
         is_fsdp: bool = False,
     ) -> Callable:
         """Return save hook for accelerator.register_save_state_pre_hook."""
@@ -113,6 +113,7 @@ class TransformerWrapper(torch.nn.Module):
                     )
                     if is_fsdp:
                         from diffusers.training_utils import _to_cpu_contiguous
+
                         lora_sd = _to_cpu_contiguous(lora_sd)
                     pipeline_cls.save_lora_weights(
                         output_dir,
@@ -128,6 +129,7 @@ class TransformerWrapper(torch.nn.Module):
                     out_path = Path(output_dir) / "transformer.safetensors"
                     try:
                         import safetensors.torch
+
                         safetensors.torch.save_file(state_dict, str(out_path))
                     except ImportError:
                         torch.save(state_dict, Path(output_dir) / "transformer.pt")
@@ -137,9 +139,9 @@ class TransformerWrapper(torch.nn.Module):
     def get_load_hook(
         self,
         accelerator: Any,
-        transformer_cls: Type,
+        transformer_cls: type,
         is_fsdp: bool = False,
-        mixed_precision: Optional[str] = None,
+        mixed_precision: str | None = None,
     ) -> Callable:
         """Return load hook for accelerator.register_load_state_pre_hook."""
 
@@ -172,18 +174,14 @@ class TransformerWrapper(torch.nn.Module):
                         break
 
             if trans is None:
-                raise ValueError(f"No transformer in load hook")
+                raise ValueError("No transformer in load hook")
 
             if mode == "lora":
                 from peft import set_peft_model_state_dict
 
                 lora_sd = pipeline_cls.lora_state_dict(input_dir)
                 prefix = f"{comp_name}."
-                trans_sd = {
-                    k[len(prefix):]: v
-                    for k, v in lora_sd.items()
-                    if k.startswith(prefix)
-                }
+                trans_sd = {k[len(prefix) :]: v for k, v in lora_sd.items() if k.startswith(prefix)}
                 trans_sd = convert_unet_state_dict_to_peft(trans_sd)
                 set_peft_model_state_dict(trans, trans_sd, adapter_name="default")
             else:
@@ -191,6 +189,7 @@ class TransformerWrapper(torch.nn.Module):
                 if path.exists():
                     try:
                         import safetensors.torch
+
                         state = safetensors.torch.load_file(str(path))
                     except ImportError:
                         state = torch.load(str(path), map_location="cpu", weights_only=True)
@@ -230,6 +229,7 @@ class TransformerWrapper(torch.nn.Module):
             state = trans.state_dict()
             try:
                 import safetensors.torch
+
                 safetensors.torch.save_file(state, str(output_dir / "transformer.safetensors"))
             except ImportError:
                 torch.save(state, str(output_dir / "transformer.pt"))

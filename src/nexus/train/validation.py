@@ -1,25 +1,27 @@
 """
-Validation: init pipeline with trained transformer, generate images, log to trackers.
+Validation during training: build pipeline with trained transformer, generate sample
+images, and log to TensorBoard, WandB, or MLflow.
 """
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 import torch
-
 from diffusers.training_utils import free_memory
 
 logger = logging.getLogger(__name__)
 
 try:
     import wandb
+
     WANDB_AVAILABLE = True
 except ImportError:
     WANDB_AVAILABLE = False
 
 try:
     import mlflow
+
     MLFLOW_AVAILABLE = True
 except ImportError:
     MLFLOW_AVAILABLE = False
@@ -32,14 +34,15 @@ def run_validation(
     accelerator: Any,
     step: int,
     num_images: int = 4,
-    seed: Optional[int] = 42,
+    seed: int | None = 42,
     weight_dtype: torch.dtype = torch.float16,
-    pretrained_path: Optional[str] = None,
-    revision: Optional[str] = None,
-    variant: Optional[str] = None,
+    pretrained_path: str | None = None,
+    revision: str | None = None,
+    variant: str | None = None,
 ) -> None:
     """
-    Build pipeline with trained transformer, run inference, log to TensorBoard/WandB/MLflow.
+    Build a pipeline with the trained transformer, run inference, and log images
+    to the configured trackers (TensorBoard, WandB, MLflow).
     """
     pipeline = pipeline_cls.from_pretrained(
         pretrained_path,
@@ -53,9 +56,7 @@ def run_validation(
     pipeline.set_progress_bar_config(disable=True)
 
     generator = (
-        torch.Generator(device=accelerator.device).manual_seed(seed)
-        if seed is not None
-        else None
+        torch.Generator(device=accelerator.device).manual_seed(seed) if seed is not None else None
     )
 
     images = []
@@ -67,9 +68,7 @@ def run_validation(
     for tracker in accelerator.trackers:
         if tracker.name == "tensorboard":
             np_images = np.stack([np.asarray(img) for img in images])
-            tracker.writer.add_images(
-                "validation", np_images, step, dataformats="NHWC"
-            )
+            tracker.writer.add_images("validation", np_images, step, dataformats="NHWC")
         if tracker.name == "wandb" and WANDB_AVAILABLE:
             tracker.log(
                 {

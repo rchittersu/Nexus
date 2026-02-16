@@ -42,7 +42,7 @@ pip install -e .
 Verify setup (checks only; does not install):
 
 ```bash
-python scripts/check_setup.py
+python check_setup.py
 ```
 
 Use as a dependency in another project:
@@ -62,6 +62,14 @@ Then `from nexus.train import main` or `import nexus`.
 ```bash
 pip install -e .
 pytest -v
+```
+
+Lint and format with ruff:
+
+```bash
+./lint.sh          # check only
+./lint.sh --fix    # auto-fix
+./lint.sh format   # format code
 ```
 
 Unit tests cover config (load, extends, ns_to_kwargs), losses (MSE, L1, Huber, LogCosh), data (collate), and dataset prep (prepare, precompute).
@@ -86,7 +94,9 @@ Nexus/
 │       ├── run1.yaml        # Experiment config (extends base)
 │       └── distillation.yaml  # Distillation training (teacher-student)
 ├── scripts/
-│   └── train.sh           # ./scripts/train.sh <config> [--overrides...]
+│   └── train.sh           # Training entrypoint
+├── check_setup.py         # Verify deps (python check_setup.py)
+├── lint.sh                # Ruff lint/format (./lint.sh)
 ├── src/nexus/
 │   ├── train/             # Training
 │   │   ├── main.py        # Entrypoint
@@ -101,7 +111,7 @@ Nexus/
 │   │   ├── t2i_dataset.py       # Streaming T2I (used by precompute)
 │   │   └── utils.py            # Text preprocessing for captions
 │   └── utils/              # Device/dtype helpers
-└── datasets/prepare/sstk/   # Data prep scripts
+└── datasets/prepare/sstk/  # Data prep scripts
     ├── base.py             # Streaming dataloader builder
     ├── prepare.py          # Images → MDS
     ├── precompute.py       # MDS → latents + embeddings
