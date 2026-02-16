@@ -1,6 +1,6 @@
 import logging
 import re
-
+import urllib.parse as ul
 import ftfy
 from bs4 import BeautifulSoup
 import html
@@ -12,24 +12,40 @@ from diffusers.utils import (
 )
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
-# Copied from diffusers.pipelines.deepfloyd_if.pipeline_if.IFPipeline._text_preprocessing
-def text_preprocessing(text, clean_caption=False):
-    if clean_caption and not is_bs4_available():
-        logger.warning(BACKENDS_MAPPING["bs4"][-1].format("Setting `clean_caption=True`"))
-        logger.warning("Setting `clean_caption` to False...")
-        clean_caption = False
 
-    if clean_caption and not is_ftfy_available():
-        logger.warning(BACKENDS_MAPPING["ftfy"][-1].format("Setting `clean_caption=True`"))
-        logger.warning("Setting `clean_caption` to False...")
-        clean_caption = False
+bad_punct_regex = re.compile(
+        r"["
+        + "#®•©™&@·º½¾¿¡§~"
+        + r"\)"
+        + r"\("
+        + r"\]"
+        + r"\["
+        + r"\}"
+        + r"\{"
+        + r"\|"
+        + "\\"
+        + r"\/"
+        + r"\*"
+        + r"]{1,}"
+    )  # noqa
+
+# Copied from diffusers.pipelines.deepfloyd_if.pipeline_if.IFPipeline._text_preprocessing
+def text_preprocessing(text, clean=False):
+    if clean and not is_bs4_available():
+        logger.warning(BACKENDS_MAPPING["bs4"][-1].format("Setting `clean=True`"))
+        logger.warning("Setting `clean` to False...")
+        clean = False
+
+    if clean and not is_ftfy_available():
+        logger.warning(BACKENDS_MAPPING["ftfy"][-1].format("Setting `clean=True`"))
+        logger.warning("Setting `clean` to False...")
+        clean = False
 
     if not isinstance(text, (tuple, list)):
         text = [text]
 
     def process(text: str):
-        if clean_caption:
-            text = clean_caption(text)
+        if clean:
             text = clean_caption(text)
         else:
             text = text.lower().strip()
@@ -115,7 +131,7 @@ def clean_caption(caption):
     caption = re.sub(r"[\"\']{2,}", r'"', caption)  # """AUSVERKAUFT"""
     caption = re.sub(r"[\.]{2,}", r" ", caption)  # """AUSVERKAUFT"""
 
-    caption = re.sub(self.bad_punct_regex, r" ", caption)  # ***AUSVERKAUFT***, #AUSVERKAUFT
+    caption = re.sub(bad_punct_regex, r" ", caption)  # ***AUSVERKAUFT***, #AUSVERKAUFT
     caption = re.sub(r"\s+\.\s+", r" ", caption)  # " . "
 
     # this-is-my-cute-cat / this_is_my_cute_cat

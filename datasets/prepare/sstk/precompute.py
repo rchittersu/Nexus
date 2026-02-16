@@ -14,7 +14,7 @@ from streaming.base.util import merge_index
 from tqdm import tqdm
 
 from .base import build_streaming_sstk_t2i_dataloader
-from src.nexus.utils import DATA_TYPES
+from nexus.utils import DATA_TYPES
 
 """Example usage:
 accelerate launch --multi_gpu --num_processes 8 precompute.py \

@@ -5,7 +5,7 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 from streaming import Stream, StreamingDataset
 
-from src.nexus.data.t2i_dataset import StreamingT2IDataset
+from nexus.data.t2i_dataset import StreamingT2IDataset
 from transformers import AutoTokenizer
 
 

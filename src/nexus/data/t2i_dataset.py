@@ -27,7 +27,7 @@ class StreamingT2IDataset(StreamingDataset):
             batch_size=batch_size,
         )
 
-        assert self.transforms_list is not None, 'Must provide transforms to resize and center crop images'
+        assert transforms_list is not None, 'Must provide transforms to resize and center crop images'
 
         self.transforms_list = transforms_list
         self.caption_key = caption_key
