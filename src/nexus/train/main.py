@@ -30,9 +30,9 @@ from diffusers.utils.torch_utils import is_compiled_module
 
 from peft import LoraConfig
 
-from nexus.train.config import ns_to_kwargs, parse_args
-from nexus.train.train_loop import training_step_precomputed
-from nexus.train.validation import run_validation
+from .config import ns_to_kwargs, parse_args
+from .train_loop import training_step_precomputed
+from .validation import run_validation
 
 check_min_version("0.37.0.dev0")
 logger = get_logger(__name__)
@@ -269,7 +269,7 @@ def main(args=None):
 
     collate_fn = cfg.collate._fn if hasattr(cfg.collate, "_fn") else None
     if collate_fn is None:
-        from nexus.data.precomputed_sstk import collate_precomputed
+        from ..data.precomputed_sstk import collate_precomputed
         collate_fn = collate_precomputed
 
     train_dataloader = torch.utils.data.DataLoader(
@@ -332,7 +332,7 @@ def main(args=None):
     loss_cfg = cfg.loss
     loss_class = getattr(loss_cfg, "_class", None)
     if loss_class is None:
-        from nexus.train.losses import MSELoss
+        from .losses import MSELoss
         loss_fn = MSELoss()
     else:
         loss_kwargs = ns_to_kwargs(getattr(loss_cfg, "kwargs", None))

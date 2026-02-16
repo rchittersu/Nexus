@@ -12,7 +12,7 @@ from diffusers.training_utils import (
     compute_loss_weighting_for_sd3,
 )
 
-from nexus.train.losses import FlowMatchingLossBase
+from .losses import FlowMatchingLossBase
 
 
 def get_sigmas(

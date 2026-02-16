@@ -8,7 +8,7 @@ Config-driven Flux.2 Klein training on precomputed SSTK data. YAML-based configs
 
 ```bash
 # Install (from repo root)
-pip install -e ".[precomputed]"
+pip install -e .
 
 # Train (config is the only required arg)
 ./scripts/train.sh configs/klein4b/run1.yaml
@@ -36,25 +36,35 @@ With overrides:
 ## Install
 
 ```bash
-pip install -e ".[precomputed]"
+pip install -e .
 ```
 
-Extras:
+Verify setup (checks only; does not install):
 
-| Extra | Purpose |
-|-------|---------|
-| `precomputed` | MosaicML Streaming, PyYAML, safetensors (included in train deps) |
-| `train` | torch, diffusers, transformers, accelerate, peft |
-| `dev` | pytest, ruff |
+```bash
+python scripts/check_setup.py
+```
+
+Use as a dependency in another project:
+
+```bash
+# From Git
+pip install git+https://github.com/your-org/Nexus.git
+
+# Or from a local path
+pip install -e /path/to/Nexus
+```
+
+Then `from nexus.train import main` or `import nexus`.
 
 ## Testing
 
 ```bash
-pip install -e ".[precomputed,dev]"
+pip install -e .
 pytest tests/ -v
 ```
 
-Unit tests cover config (load, extends, ns_to_kwargs), losses (MSE, L1, Huber, LogCosh), and data (collate). Config tests that load the full Klein 4B config require train deps (diffusers).
+Unit tests cover config (load, extends, ns_to_kwargs), losses (MSE, L1, Huber, LogCosh), and data (collate).
 
 Accelerate config:
 
