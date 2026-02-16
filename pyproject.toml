@@ -21,6 +21,12 @@ dev = ["pytest", "ruff"]
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.pytest.ini_options]
+markers = [
+    "integration: marks tests as integration (slow, require GPU/model)",
+]
+testpaths = ["datasets/prepare/sstk/tests"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"
