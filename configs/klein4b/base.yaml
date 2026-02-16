@@ -1,0 +1,94 @@
+# Base Flux2 Klein 4B config — model, dataset, loss, optimizer. Rarely changes.
+# Experiment configs use extends: base.yaml and override train, output, validation.
+
+dataset:
+  class_name: nexus.data.precomputed_sstk:PrecomputedSSTKDataset
+  kwargs:
+    local: null
+    resolution: 512
+    latent_channels: 16
+    text_embed_seq_len: 512
+    text_embed_hidden: 0
+    text_ids_dim: 4
+    shuffle: true
+
+collate:
+  class_name: nexus.data.precomputed_sstk:collate_precomputed
+
+model:
+  pretrained_model_name_or_path: black-forest-labs/FLUX.2-klein-base-4B
+  revision: null
+  variant: null
+  transformer:
+    class_name: diffusers:Flux2Transformer2DModel
+    subfolder: transformer
+  vae:
+    class_name: diffusers:AutoencoderKLFlux2
+    subfolder: vae
+  scheduler:
+    class_name: diffusers:FlowMatchEulerDiscreteScheduler
+    subfolder: scheduler
+  pipeline:
+    class_name: diffusers:Flux2KleinPipeline
+  transformer_wrapper:
+    class_name: nexus.models.transformer_wrapper:TransformerWrapper
+    component_name: transformer
+
+train_mode: lora
+
+lora:
+  rank: 4
+  alpha: 4
+  dropout: 0.0
+  target_modules: ["to_k", "to_q", "to_v", "to_out.0"]
+
+train:
+  batch_size: 4
+  num_epochs: 1
+  max_steps: null
+  gradient_accumulation_steps: 1
+  gradient_checkpointing: false
+  learning_rate: 1.0e-4
+  guidance_scale: 3.5
+  scale_lr: false
+  lr_scheduler: constant
+  lr_warmup_steps: 500
+  lr_num_cycles: 1
+  lr_power: 1.0
+  dataloader_num_workers: 0
+
+loss:
+  class_name: nexus.train.losses:MSELoss
+  weighting_scheme: none
+  logit_mean: 0.0
+  logit_std: 1.0
+  mode_scale: 1.29
+
+optimizer:
+  class_name: torch.optim:AdamW
+  kwargs:
+    betas: [0.9, 0.999]
+    weight_decay: 0.0001
+    eps: 1.0e-8
+max_grad_norm: 1.0
+
+validation:
+  steps: 500
+  prompt: null
+  num_images: 4
+  seed: 42
+
+output_dir: flux2-precomputed-lora
+logging_dir: logs
+checkpointing_steps: 500
+checkpoints_total_limit: null
+resume_from_checkpoint: null
+seed: null
+
+allow_tf32: false
+report_to: mlflow
+mixed_precision: null
+
+mlflow:
+  tracking_uri: null
+  experiment_name: nexus-flux2

@@ -1,0 +1,474 @@
+"""
+Flux.2 Klein training on precomputed SSTK MDS data.
+
+Config-driven via YAML. Usage:
+  accelerate launch -m nexus.train.main --config configs/klein4b/run1.yaml
+  # Overrides:
+  accelerate launch -m nexus.train.main --config configs/klein4b/run1.yaml \\
+    --precomputed_data_dir /path/to/mds --output_dir ./out
+"""
+
+import copy
+import logging
+import math
+import os
+import shutil
+from pathlib import Path
+
+import torch
+import transformers
+from accelerate import Accelerator
+from accelerate.logging import get_logger
+from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration, set_seed
+from tqdm.auto import tqdm
+
+import diffusers
+from diffusers.optimization import get_scheduler
+from diffusers.training_utils import cast_training_params
+from diffusers.utils import check_min_version
+from diffusers.utils.torch_utils import is_compiled_module
+
+from peft import LoraConfig
+
+from nexus.train.config import ns_to_kwargs, parse_args
+from nexus.train.train_loop import training_step_precomputed
+from nexus.train.validation import run_validation
+
+check_min_version("0.37.0.dev0")
+logger = get_logger(__name__)
+
+
+def _uses_mlflow(report_to) -> bool:
+    return report_to == "mlflow" or (
+        isinstance(report_to, list) and "mlflow" in report_to
+    )
+
+
+def _prune_old_checkpoints(output_dir: str, limit: int) -> None:
+    """Remove oldest checkpoints if count exceeds limit."""
+    dirs = sorted(
+        [d for d in os.listdir(output_dir) if d.startswith("checkpoint")],
+        key=lambda x: int(x.split("-")[1]),
+    )
+    if len(dirs) >= limit:
+        for d in dirs[: len(dirs) - limit + 1]:
+            shutil.rmtree(os.path.join(output_dir, d))
+
+
+def main(args=None):
+    """Run Flux.2 Klein LoRA/full training on precomputed SSTK data."""
+    cfg = parse_args(args)
+
+    config_path = getattr(cfg, "_config_path", None)
+    logger.info("Config: %s", config_path or "(unknown)")
+
+    # MPS (Apple Silicon) does not support bf16
+    if torch.backends.mps.is_available() and getattr(cfg, "mixed_precision", None) == "bf16":
+        raise ValueError("bf16 not supported on MPS. Use fp16 or fp32.")
+
+    train_cfg = cfg.train
+    model_cfg = cfg.model
+    lora_cfg = getattr(cfg, "lora", None)
+    train_mode = getattr(cfg, "train_mode", "lora")
+    pretrained_path = model_cfg.pretrained_model_name_or_path
+
+    logging_dir = Path(cfg.output_dir, cfg.logging_dir)
+    proj_config = ProjectConfiguration(
+        project_dir=cfg.output_dir, logging_dir=str(logging_dir)
+    )
+    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+
+    # MLflow local: set tracking URI and use MLflowTracker with output_dir
+    report_to = cfg.report_to
+    if _uses_mlflow(report_to):
+        mlflow_dir = Path(cfg.output_dir).resolve() / "mlruns"
+        mlflow_dir.mkdir(parents=True, exist_ok=True)
+        tracking_uri = getattr(
+            getattr(cfg, "mlflow", None), "tracking_uri", None
+        ) or mlflow_dir.as_uri()
+        os.environ.setdefault("MLFLOW_TRACKING_URI", tracking_uri)
+        from accelerate.tracking import MLflowTracker
+        mlflow_cfg = getattr(cfg, "mlflow", None)
+        mlflow_tracker = MLflowTracker(
+            experiment_name=getattr(mlflow_cfg, "experiment_name", "nexus-flux2"),
+            logging_dir=str(mlflow_dir),
+        )
+        log_with = mlflow_tracker if report_to == "mlflow" else [
+            t for t in report_to if t != "mlflow"
+        ] + [mlflow_tracker]
+    else:
+        log_with = report_to
+
+    accelerator = Accelerator(
+        gradient_accumulation_steps=train_cfg.gradient_accumulation_steps,
+        mixed_precision=getattr(cfg, "mixed_precision", None),
+        log_with=log_with,
+        project_config=proj_config,
+        kwargs_handlers=[ddp_kwargs],
+    )
+
+    if torch.backends.mps.is_available():
+        accelerator.native_amp = False
+
+    logging.basicConfig(
+        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+        datefmt="%m/%d/%Y %H:%M:%S",
+        level=logging.INFO,
+    )
+    logger.info(str(accelerator.state))
+    if accelerator.is_local_main_process:
+        transformers.utils.logging.set_verbosity_warning()
+        diffusers.utils.logging.set_verbosity_info()
+    else:
+        transformers.utils.logging.set_verbosity_error()
+        diffusers.utils.logging.set_verbosity_error()
+
+    if getattr(cfg, "seed", None) is not None:
+        set_seed(cfg.seed)
+
+    # Determine weight dtype from mixed_precision
+    weight_dtype = torch.float32
+    mp = getattr(cfg, "mixed_precision", None)
+    if mp == "fp16":
+        weight_dtype = torch.float16
+    elif mp == "bf16":
+        weight_dtype = torch.bfloat16
+
+    # Load scheduler
+    sched_cls = model_cfg.scheduler._class
+    noise_scheduler = sched_cls.from_pretrained(
+        pretrained_path,
+        subfolder=model_cfg.scheduler.subfolder,
+        revision=model_cfg.revision,
+    )
+    noise_scheduler_copy = copy.deepcopy(noise_scheduler)
+
+    # VAE: used only for batch-norm stats (latent normalization)
+    vae_cls = model_cfg.vae._class
+    vae = vae_cls.from_pretrained(
+        pretrained_path,
+        subfolder=model_cfg.vae.subfolder,
+        revision=model_cfg.revision,
+        variant=model_cfg.variant,
+    )
+    latents_bn_mean = vae.bn.running_mean.view(1, -1, 1, 1).to(accelerator.device)
+    latents_bn_std = torch.sqrt(
+        vae.bn.running_var.view(1, -1, 1, 1) + vae.config.batch_norm_eps
+    ).to(accelerator.device)
+    del vae
+
+    # Transformer: load base weights, add LoRA adapter or enable full finetune
+    trans_cls = model_cfg.transformer._class
+    subfolder = model_cfg.transformer.subfolder
+
+    transformer = trans_cls.from_pretrained(
+        pretrained_path,
+        subfolder=subfolder,
+        revision=model_cfg.revision,
+        variant=model_cfg.variant,
+        torch_dtype=weight_dtype,
+    )
+    transformer.requires_grad_(False)
+
+    lora_config = None
+    if train_mode == "lora" and lora_cfg:
+        target_modules = (
+            [m.strip() for m in lora_cfg.target_modules]
+            if isinstance(lora_cfg.target_modules, list)
+            else [s.strip() for s in str(lora_cfg.target_modules).split(",")]
+        )
+        lora_config = LoraConfig(
+            r=lora_cfg.rank,
+            lora_alpha=lora_cfg.alpha,
+            lora_dropout=lora_cfg.dropout,
+            init_lora_weights="gaussian",
+            target_modules=target_modules,
+        )
+        transformer.add_adapter(lora_config)
+    elif train_mode == "full":
+        transformer.requires_grad_(True)
+
+    pipeline_cls = model_cfg.pipeline._class if train_mode == "lora" else None
+    wrapper_cls = model_cfg.transformer_wrapper._class
+    component_name = getattr(model_cfg.transformer_wrapper, "component_name", "transformer")
+    transformer_wrapper = wrapper_cls(
+        transformer=transformer,
+        pretrained_path=pretrained_path,
+        transformer_cls=model_cfg.transformer._class,
+        subfolder=subfolder,
+        mode=train_mode,
+        lora_config=lora_config,
+        pipeline_cls=pipeline_cls,
+        component_name=component_name,
+    )
+
+    if train_cfg.gradient_checkpointing:
+        transformer.enable_gradient_checkpointing()
+
+    os.makedirs(cfg.output_dir, exist_ok=True)
+    if config_path and accelerator.is_local_main_process:
+        dest = Path(cfg.output_dir) / "config.yaml"
+        shutil.copy2(config_path, dest)
+        logger.info("Config copied to %s", dest)
+    transformer.to(device=accelerator.device, dtype=weight_dtype)
+
+    def _unwrap(m):
+        m = accelerator.unwrap_model(m)
+        return m._orig_mod if is_compiled_module(m) else m
+
+    transformer_cls = type(transformer)
+    is_fsdp = getattr(accelerator.state, "fsdp_plugin", None) is not None
+
+    save_hook = transformer_wrapper.get_save_hook(
+        accelerator=accelerator,
+        transformer_cls=transformer_cls,
+        is_fsdp=is_fsdp,
+    )
+    load_hook = transformer_wrapper.get_load_hook(
+        accelerator=accelerator,
+        transformer_cls=transformer_cls,
+        is_fsdp=is_fsdp,
+        mixed_precision=mp,
+    )
+
+    accelerator.register_save_state_pre_hook(save_hook)
+    accelerator.register_load_state_pre_hook(load_hook)
+
+    if getattr(cfg, "allow_tf32", False) and torch.cuda.is_available():
+        torch.backends.cuda.matmul.allow_tf32 = True
+
+    learning_rate = train_cfg.learning_rate
+    if train_cfg.scale_lr:
+        learning_rate *= (
+            train_cfg.gradient_accumulation_steps
+            * train_cfg.batch_size
+            * accelerator.num_processes
+        )
+
+    if mp == "fp16":
+        cast_training_params([transformer], dtype=torch.float32)
+
+    opt_cls = cfg.optimizer._class
+    opt_kwargs = ns_to_kwargs(getattr(cfg.optimizer, "kwargs", None))
+    trainable_params = transformer_wrapper.get_trainable_parameters()
+    optimizer = opt_cls(
+        trainable_params,
+        lr=learning_rate,
+        **opt_kwargs,
+    )
+
+    # Build dataset and dataloader from YAML config
+    ds_kwargs = ns_to_kwargs(
+        cfg.dataset.kwargs,
+        batch_size=train_cfg.batch_size,
+        latent_dtype=weight_dtype,
+    )
+    if ds_kwargs.get("local") is None:
+        raise ValueError("dataset.kwargs.local (or --precomputed_data_dir) is required")
+    train_dataset = cfg.dataset._class(**ds_kwargs)
+
+    collate_fn = cfg.collate._fn if hasattr(cfg.collate, "_fn") else None
+    if collate_fn is None:
+        from nexus.data.precomputed_sstk import collate_precomputed
+        collate_fn = collate_precomputed
+
+    train_dataloader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_size=train_cfg.batch_size,
+        shuffle=True,
+        collate_fn=collate_fn,
+        num_workers=train_cfg.dataloader_num_workers,
+        drop_last=True,
+    )
+
+    num_warmup = train_cfg.lr_warmup_steps * accelerator.num_processes
+    len_dl = math.ceil(len(train_dataloader) / accelerator.num_processes)
+    num_updates = math.ceil(len_dl / train_cfg.gradient_accumulation_steps)
+    max_steps_cfg = getattr(train_cfg, "max_steps", None)
+    num_training_steps = (
+        train_cfg.num_epochs * num_updates
+        if max_steps_cfg is None
+        else max_steps_cfg
+    )
+
+    lr_scheduler = get_scheduler(
+        train_cfg.lr_scheduler,
+        optimizer=optimizer,
+        num_warmup_steps=num_warmup,
+        num_training_steps=num_training_steps,
+        num_cycles=train_cfg.lr_num_cycles,
+        power=train_cfg.lr_power,
+    )
+
+    transformer, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+        transformer, optimizer, train_dataloader, lr_scheduler
+    )
+
+    num_updates_per_epoch = math.ceil(
+        len(train_dataloader) / train_cfg.gradient_accumulation_steps
+    )
+    max_steps = (
+        train_cfg.num_epochs * num_updates_per_epoch
+        if max_steps_cfg is None
+        else max_steps_cfg
+    )
+    num_epochs = math.ceil(max_steps / num_updates_per_epoch)
+
+    if accelerator.is_main_process:
+        config_dict = {}
+        for k, v in vars(cfg).items():
+            if not k.startswith("_"):
+                try:
+                    config_dict[k] = str(v)
+                except Exception:
+                    config_dict[k] = repr(v)
+        exp_name = (
+            getattr(getattr(cfg, "mlflow", None), "experiment_name", "nexus-flux2")
+            if _uses_mlflow(report_to)
+            else "nexus-flux2"
+        )
+        accelerator.init_trackers(exp_name, config=config_dict)
+
+    loss_cfg = cfg.loss
+    loss_class = getattr(loss_cfg, "_class", None)
+    if loss_class is None:
+        from nexus.train.losses import MSELoss
+        loss_fn = MSELoss()
+    else:
+        loss_kwargs = ns_to_kwargs(getattr(loss_cfg, "kwargs", None))
+        loss_fn = loss_class(**loss_kwargs)
+    total_bs = (
+        train_cfg.batch_size
+        * accelerator.num_processes
+        * train_cfg.gradient_accumulation_steps
+    )
+    logger.info("***** Running training (precomputed SSTK) *****")
+    logger.info(f"  Data = {ds_kwargs.get('local')}")
+    logger.info(f"  Num epochs = {num_epochs}")
+    logger.info(f"  Total batch size = {total_bs}")
+    logger.info(f"  Total steps = {max_steps}")
+
+    global_step = 0
+    first_epoch = 0
+
+    resume = getattr(cfg, "resume_from_checkpoint", None)
+    if resume:
+        path = resume
+        if path == "latest":
+            dirs = [
+                d
+                for d in os.listdir(cfg.output_dir)
+                if d.startswith("checkpoint")
+            ]
+            dirs = sorted(dirs, key=lambda x: int(x.split("-")[1]))
+            path = dirs[-1] if dirs else None
+        else:
+            path = os.path.basename(path)
+        if path:
+            accelerator.print(f"Resuming from {path}")
+            accelerator.load_state(os.path.join(cfg.output_dir, path))
+            global_step = int(path.split("-")[1])
+            first_epoch = global_step // num_updates_per_epoch
+        else:
+            resume = None
+
+    progress_bar = tqdm(
+        range(max_steps),
+        initial=global_step,
+        desc="Steps",
+        disable=not accelerator.is_local_main_process,
+    )
+
+    for epoch in range(first_epoch, num_epochs):
+        transformer.train()
+        for step, batch in enumerate(train_dataloader):
+            batch = {
+                "latents": batch["latents"].to(accelerator.device, dtype=weight_dtype),
+                "text_embeds": batch["text_embeds"].to(accelerator.device, dtype=weight_dtype),
+                "text_ids": batch["text_ids"].to(accelerator.device),
+            }
+
+            with accelerator.accumulate([transformer]):
+                loss = training_step_precomputed(
+                    batch=batch,
+                    transformer=transformer,
+                    latents_bn_mean=latents_bn_mean,
+                    latents_bn_std=latents_bn_std,
+                    noise_scheduler_copy=noise_scheduler_copy,
+                    weighting_scheme=loss_cfg.weighting_scheme,
+                    logit_mean=loss_cfg.logit_mean,
+                    logit_std=loss_cfg.logit_std,
+                    mode_scale=loss_cfg.mode_scale,
+                    guidance_scale=train_cfg.guidance_scale,
+                    accelerator=accelerator,
+                    loss_fn=loss_fn,
+                )
+                accelerator.backward(loss)
+                if accelerator.sync_gradients:
+                    accelerator.clip_grad_norm_(
+                        transformer.parameters(),
+                        cfg.max_grad_norm,
+                    )
+                optimizer.step()
+                lr_scheduler.step()
+                optimizer.zero_grad()
+
+            if accelerator.sync_gradients:
+                progress_bar.update(1)
+                global_step += 1
+                logs = {
+                    "loss": loss.detach().item(),
+                    "lr": lr_scheduler.get_last_lr()[0],
+                }
+                progress_bar.set_postfix(**logs)
+                accelerator.log(logs, step=global_step)
+
+                # Periodic validation: generate images and log to trackers
+                val_cfg = getattr(cfg, "validation", None)
+                if (
+                    accelerator.is_main_process
+                    and val_cfg
+                    and getattr(val_cfg, "prompt", None)
+                    and global_step % getattr(val_cfg, "steps", 500) == 0
+                ):
+                    run_validation(
+                        pipeline_cls=model_cfg.pipeline._class,
+                        transformer=_unwrap(transformer),
+                        validation_prompt=val_cfg.prompt,
+                        accelerator=accelerator,
+                        step=global_step,
+                        num_images=getattr(val_cfg, "num_images", 4),
+                        seed=getattr(val_cfg, "seed", 42),
+                        weight_dtype=weight_dtype,
+                        pretrained_path=pretrained_path,
+                        revision=model_cfg.revision,
+                        variant=model_cfg.variant,
+                    )
+
+                if (accelerator.is_main_process or is_fsdp) and global_step % cfg.checkpointing_steps == 0:
+                    limit = getattr(cfg, "checkpoints_total_limit", None)
+                    if limit is not None:
+                        _prune_old_checkpoints(cfg.output_dir, limit)
+                    save_path = os.path.join(
+                        cfg.output_dir, f"checkpoint-{global_step}"
+                    )
+                    accelerator.save_state(save_path)
+                    logger.info(f"Saved state to {save_path}")
+
+            if global_step >= max_steps:
+                break
+
+    accelerator.wait_for_everyone()
+
+    if accelerator.is_main_process:
+        transformer_wrapper.save_final(
+            output_dir=cfg.output_dir,
+            model=transformer,
+            unwrap_fn=_unwrap,
+        )
+
+    accelerator.end_training()
+
+
+if __name__ == "__main__":
+    main()

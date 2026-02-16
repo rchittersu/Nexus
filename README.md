@@ -1,57 +1,271 @@
 # Nexus
 
-Personal DiT (Diffusion Transformer) training stack — similar in spirit to [diffusers](https://github.com/huggingface/diffusers), but tailored to your own workflows.
+Config-driven Flux.2 Klein training on precomputed SSTK data. YAML-based configs, LoRA or full fine-tuning, validation, MLflow tracking, and checkpointing.
 
-## Layout
+---
 
-- **`src/nexus/`** — Core **definitions** (library-style):
-  - `archs` — DiT blocks (`DiTBlockBase`), embedders (`EmbedderBase`), etc.
-  - `pipelines` — diffusion pipelines, schedulers, sampling (placeholders)
-  - `train` — training loops, logging, checkpointing, config
-  - `utils` — shared helpers (device, dtype via `DATA_TYPES`, …)
-  - `data` — dataset interfaces (`StreamingT2IDataset`), text preprocessing, transforms
+## Quick start
 
-- **`datasets/prepare/sstk/`** — SSTK-style dataset preparation:
-  - `prepare.py` — images → MDS shards (filtering by size/aspect ratio)
-  - `precompute.py` — MDS shards → precomputed latents + text embeddings (VAE, text encoder)
-  - `run.sh` — orchestration script for prepare + precompute
+```bash
+# Install (from repo root)
+pip install -e ".[precomputed]"
 
-- **Project root** — Extended implementations and entrypoints:
-  - `run_train.py` — example training entrypoint; import from `nexus` and run your loop
+# Train (config is the only required arg)
+./scripts/train.sh configs/klein4b/run1.yaml
+```
+
+With overrides:
+
+```bash
+./scripts/train.sh configs/klein4b/run1.yaml \
+  --precomputed_data_dir /path/to/mds_latents \
+  --output_dir ./runs/exp1 \
+  --max_train_steps 2000
+```
+
+---
+
+## Prerequisites
+
+- **Data**: MDS shards with precomputed VAE latents and text embeddings (see [Dataset preparation](#dataset-preparation))
+- **Model**: `black-forest-labs/FLUX.2-klein-base-4B` (or compatible) from Hugging Face
+- **GPU**: Recommended for training
+
+---
 
 ## Install
 
 ```bash
-pip install -e .
-# or with training deps (torch, diffusers, transformers):
-pip install -e ".[train]"
-# with dev tools (pytest, ruff):
-pip install -e ".[train,dev]"
+pip install -e ".[precomputed]"
 ```
 
-## Usage
+Extras:
 
-From the repo root:
+| Extra | Purpose |
+|-------|---------|
+| `precomputed` | MosaicML Streaming, PyYAML, safetensors (included in train deps) |
+| `train` | torch, diffusers, transformers, accelerate, peft |
+| `dev` | pytest, ruff |
 
-```python
-from nexus.archs import DiTBlockBase, EmbedderBase
-from nexus.data.t2i_dataset import StreamingT2IDataset
-from nexus.utils import DATA_TYPES
+## Testing
 
-# Your training entrypoint would use these core definitions
+```bash
+pip install -e ".[precomputed,dev]"
+pytest tests/ -v
 ```
 
-## Dataset preparation (SSTK)
+Unit tests cover config (load, extends, ns_to_kwargs), losses (MSE, L1, Huber, LogCosh), and data (collate). Config tests that load the full Klein 4B config require train deps (diffusers).
 
-For SSTK-style pipelines (e.g. SA1B), images are first packed into MDS shards, then latents and embeddings are precomputed with a pretrained VAE + text encoder (e.g. FLUX.2-klein):
+Accelerate config:
+
+```bash
+accelerate config
+```
+
+Choose multi-GPU / single-GPU and mixed precision as needed.
+
+---
+
+## Project structure
+
+```
+Nexus/
+├── configs/
+│   └── klein4b/
+│       ├── base.yaml      # Shared Flux2 Klein 4B defaults
+│       └── run1.yaml      # Experiment config (extends base)
+├── scripts/
+│   └── train.sh           # ./scripts/train.sh <config> [--overrides...]
+├── src/nexus/
+│   ├── train/             # Training
+│   │   ├── main.py        # Entrypoint
+│   │   ├── config.py      # YAML load, extends, class resolution
+│   │   ├── train_loop.py  # Flow-matching step
+│   │   ├── losses.py      # MSE, L1, Huber, LogCosh
+│   │   └── validation.py  # Image gen + tracker logs
+│   ├── models/
+│   │   └── transformer_wrapper.py   # Generic LoRA/full wrapper
+│   └── data/
+│       └── precomputed_sstk.py     # MDS dataset
+└── datasets/prepare/sstk/          # Data prep scripts
+    ├── prepare.py         # Images → MDS
+    ├── precompute.py      # MDS → latents + embeddings
+    └── run.sh
+```
+
+---
+
+## Training
+
+### Script (recommended)
+
+```bash
+./scripts/train.sh <config.yaml> [accelerate args...]
+```
+
+Config is required; other args are passed through to `accelerate launch -m nexus.train.main`.
+
+### Direct invoke
+
+```bash
+accelerate launch -m nexus.train.main \
+  --config configs/klein4b/run1.yaml \
+  --precomputed_data_dir /path/to/mds \
+  --output_dir ./out \
+  --max_train_steps 1000 \
+  --resume_from_checkpoint latest
+```
+
+### CLI overrides
+
+| Flag | Effect |
+|------|--------|
+| `--config` | Required. Path to YAML config. |
+| `--precomputed_data_dir` | Overrides `dataset.kwargs.local` |
+| `--output_dir` | Overrides `output_dir` |
+| `--max_train_steps` | Overrides `train.max_steps` |
+| `--resume_from_checkpoint` | Path or `latest` |
+
+### Logging and reproducibility
+
+- Config path is logged at startup.
+- A copy of the config is saved to `{output_dir}/config.yaml` for reproducibility.
+
+---
+
+## Dataset preparation
+
+Training expects MDS shards with precomputed latents and text embeddings. Two steps:
+
+### 1. Prepare — images → MDS
+
+Packs images and captions into MDS shards.
 
 ```bash
 cd datasets/prepare/sstk
-./run.sh [prepare|precompute|all]
+./run.sh prepare
 ```
 
-Configure via env vars (see `run.sh`) or edit the script:
-- `IMAGES_TXT`, `LOCAL_MDS_DIR`, `SIZE`, `PRETRAINED_MODEL`, etc.
-- Output goes to `SAVEDIR` (default `./sa1b/mds_latents_flux2/`).
+Edit `run.sh` or set env vars: `IMAGES_TXT`, `LOCAL_MDS_DIR`, `SIZE`, etc.
 
-Keep **definitions** in `src/nexus/`; keep **concrete runs and extensions** at the root or in sibling folders.
+### 2. Precompute — MDS → latents + embeddings
+
+Encodes images with the VAE and text with the encoder; writes new MDS shards.
+
+```bash
+./run.sh precompute
+```
+
+Or both:
+
+```bash
+./run.sh all
+```
+
+Output: MDS directory with `latents_512`, `text_embeds`, `text_ids`, etc. Use this path as `dataset.kwargs.local` or `--precomputed_data_dir`.
+
+---
+
+## Config system
+
+### Inheritance
+
+Configs can extend a base file:
+
+```yaml
+# configs/klein4b/run1.yaml
+extends: base.yaml
+
+train:
+  max_steps: 1000
+  batch_size: 8
+output_dir: runs/exp1
+```
+
+`extends` is resolved relative to the config file. The child config is deep-merged over the base.
+
+### Key sections
+
+| Section | Purpose |
+|---------|---------|
+| `dataset` | Class + kwargs for `PrecomputedSSTKDataset` |
+| `model` | Transformer, VAE, scheduler, pipeline, wrapper (Flux2 Klein by default) |
+| `train` | Batch size, steps, LR, gradient accumulation, etc. |
+| `loss` | `class_name` (MSELoss, L1Loss, HuberLoss, LogCoshLoss) + weighting |
+| `lora` | Rank, alpha, dropout, target_modules |
+| `validation` | Steps, prompt (set to enable), num_images |
+| `mlflow` | `experiment_name`, `tracking_uri` |
+
+### Loss
+
+```yaml
+loss:
+  class_name: nexus.train.losses:MSELoss   # default
+  # nexus.train.losses:L1Loss
+  # nexus.train.losses:HuberLoss  # add kwargs: { delta: 1.0 }
+  # nexus.train.losses:LogCoshLoss
+  weighting_scheme: none  # none, sigma_sqrt, logit_normal, mode, cosmap
+```
+
+### Transformer wrapper
+
+Generic for Flux2, SD3, etc. Use `component_name: transformer` (Flux2) or `component_name: unet` (SD-style).
+
+---
+
+## Experiment tracking (MLflow)
+
+With `report_to: mlflow` (default in Klein configs):
+
+- Logs go to `{output_dir}/mlruns`
+- Metrics: loss, lr
+- Validation images: logged when `validation.prompt` is set
+- Config and hyperparams: stored with the run
+
+View locally:
+
+```bash
+mlflow ui --backend-store-uri ./runs/exp1/mlruns
+```
+
+---
+
+## Output layout
+
+```
+{output_dir}/
+├── config.yaml           # Copy of config used (reproducibility)
+├── mlruns/               # MLflow tracking (if report_to: mlflow)
+├── logs/                 # Additional logs
+└── checkpoint-{step}/    # Checkpoints
+```
+
+Final weights:
+
+- **LoRA**: `transformer_lora.safetensors` in output_dir
+- **Full**: `transformer.safetensors` in output_dir
+
+---
+
+## Example: new experiment
+
+1. Copy a run config:
+   ```bash
+   cp configs/klein4b/run1.yaml configs/klein4b/run2.yaml
+   ```
+2. Edit `run2.yaml`:
+   ```yaml
+   extends: base.yaml
+   train:
+     max_steps: 2000
+     learning_rate: 2.0e-4
+   validation:
+     prompt: "a photo of a sks dog"
+   output_dir: runs/run2
+   mlflow:
+     experiment_name: flux2-run2
+   ```
+3. Run:
+   ```bash
+   ./scripts/train.sh configs/klein4b/run2.yaml --precomputed_data_dir /path/to/mds
+   ```

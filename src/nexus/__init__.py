@@ -1,8 +1,5 @@
 """
-Nexus — personal DiT (Diffusion Transformer) training stack.
-
-Core definitions live here; actual runs and extended implementations
-are at the project root or in sibling folders.
+Nexus — config-driven Flux.2 Klein training on precomputed SSTK data.
 """
 
 __version__ = "0.1.0"

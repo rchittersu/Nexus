@@ -1,0 +1,20 @@
+# Klein 4B run1: extends base, overrides experiment-specific items.
+# Usage: accelerate launch -m nexus.train.main --config configs/klein4b/run1.yaml
+
+extends: base.yaml
+
+# Experiment overrides — adjust per run
+train:
+  batch_size: 4
+  max_steps: 1000
+  learning_rate: 1.0e-4
+
+validation:
+  steps: 500
+  prompt: null  # e.g. "a photo of a sks dog" to enable
+
+output_dir: flux2-precomputed-lora
+checkpointing_steps: 500
+
+mlflow:
+  experiment_name: flux2-lora-exp1

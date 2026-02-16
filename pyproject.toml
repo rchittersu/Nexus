@@ -13,8 +13,18 @@ dependencies = []
 [project.optional-dependencies]
 train = [
     "torch>=2.0",
-    "diffusers",
-    "transformers",
+    "diffusers>=0.37.0",
+    "transformers>=4.41.2",
+    "accelerate>=0.31.0",
+    "peft>=0.11.1",
+    "huggingface_hub",
+    "mlflow>=2.0",
+]
+precomputed = [
+    "nexus[train]",
+    "mosaicml-streaming",
+    "pyyaml",
+    "safetensors",
 ]
 dev = ["pytest", "ruff"]
 
@@ -25,7 +35,7 @@ where = ["src"]
 markers = [
     "integration: marks tests as integration (slow, require GPU/model)",
 ]
-testpaths = ["datasets/prepare/sstk/tests"]
+testpaths = ["tests", "datasets/prepare/sstk/tests"]
 
 [tool.ruff]
 line-length = 100
