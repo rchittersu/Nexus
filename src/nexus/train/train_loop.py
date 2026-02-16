@@ -46,9 +46,13 @@ def training_step_precomputed(
     guidance_scale: float,
     accelerator: Any,
     loss_fn: FlowMatchingLossBase,
+    source_transformer: torch.nn.Module | None = None,
 ) -> torch.Tensor:
     """
     One training step: patchify latents, add flow-matching noise, predict, configurable loss.
+
+    When source_transformer is provided, distillation loss is used: student learns from both
+    flow target and teacher (source) predictions.
     """
     latents = batch["latents"]
     text_embeds = batch["text_embeds"]
@@ -102,9 +106,31 @@ def training_step_precomputed(
     model_pred = model_pred[:, : packed_noisy.size(1) :]
     model_pred = Flux2KleinPipeline._unpack_latents_with_ids(model_pred, model_input_ids)
 
+    teacher_pred = None
+    if source_transformer is not None:
+        with torch.no_grad():
+            teacher_out = source_transformer(
+                hidden_states=packed_noisy,
+                timestep=timesteps / 1000,
+                guidance=guidance,
+                encoder_hidden_states=text_embeds,
+                txt_ids=text_ids,
+                img_ids=model_input_ids,
+                return_dict=False,
+            )[0]
+            teacher_pred = teacher_out[:, : packed_noisy.size(1) :]
+            teacher_pred = Flux2KleinPipeline._unpack_latents_with_ids(
+                teacher_pred, model_input_ids
+            )
+
     weighting = compute_loss_weighting_for_sd3(
         weighting_scheme=weighting_scheme, sigmas=sigmas
     )
     target = noise - model_input
 
-    return loss_fn(pred=model_pred, target=target, weighting=weighting)
+    return loss_fn(
+        pred=model_pred,
+        target=target,
+        weighting=weighting,
+        teacher_pred=teacher_pred,
+    )

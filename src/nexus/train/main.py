@@ -31,6 +31,7 @@ from diffusers.utils.torch_utils import is_compiled_module
 from peft import LoraConfig
 
 from .config import ns_to_kwargs, parse_args
+from .losses import _loss_uses_distillation
 from .train_loop import training_step_precomputed
 from .validation import run_validation
 
@@ -205,6 +206,27 @@ def main(args=None):
     if train_cfg.gradient_checkpointing:
         transformer.enable_gradient_checkpointing()
 
+    # Load source (teacher) transformer for distillation if configured
+    source_transformer = None
+    distillation_cfg = getattr(cfg, "distillation", None)
+    if distillation_cfg and hasattr(distillation_cfg, "source_transformer"):
+        st_cfg = distillation_cfg.source_transformer
+        source_path = getattr(st_cfg, "pretrained_model_name_or_path", None)
+        if source_path:
+            st_cls = getattr(st_cfg, "_class", None) or model_cfg.transformer._class
+            st_subfolder = getattr(st_cfg, "subfolder", None) or subfolder
+            source_transformer = st_cls.from_pretrained(
+                source_path,
+                subfolder=st_subfolder,
+                revision=getattr(st_cfg, "revision", model_cfg.revision),
+                variant=getattr(st_cfg, "variant", model_cfg.variant),
+                torch_dtype=weight_dtype,
+            )
+            source_transformer.requires_grad_(False)
+            source_transformer.eval()
+            source_transformer.to(device=accelerator.device, dtype=weight_dtype)
+            logger.info("Distillation: loaded source transformer from %s", source_path)
+
     os.makedirs(cfg.output_dir, exist_ok=True)
     if config_path and accelerator.is_local_main_process:
         dest = Path(cfg.output_dir) / "config.yaml"
@@ -336,7 +358,60 @@ def main(args=None):
         loss_fn = MSELoss()
     else:
         loss_kwargs = ns_to_kwargs(getattr(loss_cfg, "kwargs", None))
+        # Resolve MetaLoss losses list: [(instance, scale), ...]
+        losses_list = loss_kwargs.pop("losses", None)
+        if losses_list is not None:
+            import importlib
+            resolved = []
+            for item in losses_list:
+                cls = getattr(item, "_class", None) or (
+                    item.get("_class") if isinstance(item, dict) else None
+                )
+                if cls is None and (hasattr(item, "class_name") or (isinstance(item, dict) and "class_name" in item)):
+                    cn = getattr(item, "class_name", None) or item["class_name"]
+                    mod_path, cls_name = cn.rsplit(":", 1)
+                    cls = getattr(importlib.import_module(mod_path), cls_name)
+                if cls is not None:
+                    if isinstance(item, dict):
+                        nested = item.get("kwargs")
+                        if nested is not None:
+                            ikw = {k: v for k, v in (nested if isinstance(nested, dict) else vars(nested)).items()
+                                   if not str(k).startswith("_")}
+                        else:
+                            ikw = {k: v for k, v in item.items()
+                                   if k not in ("class_name", "scale", "name", "_class") and not str(k).startswith("_")}
+                    else:
+                        ikw = ns_to_kwargs(getattr(item, "kwargs", None))
+                    scale = getattr(item, "scale", 1.0) if not isinstance(item, dict) else item.get("scale", 1.0)
+                    name = getattr(item, "name", None) if not isinstance(item, dict) else item.get("name")
+                    if name is None:
+                        name = cls.__name__
+                    resolved.append((cls(**ikw), scale, name))
+            loss_kwargs["losses"] = resolved
         loss_fn = loss_class(**loss_kwargs)
+
+    # Check: when distillation is enabled, loss must use distillation (DistillationLoss or MetaLoss containing it)
+    distillation_enabled = (
+        distillation_cfg is not None
+        and hasattr(distillation_cfg, "source_transformer")
+        and getattr(
+            getattr(distillation_cfg, "source_transformer", None),
+            "pretrained_model_name_or_path",
+            None,
+        )
+    )
+    uses_distillation = _loss_uses_distillation(loss_fn)
+    if distillation_enabled and not uses_distillation:
+        raise ValueError(
+            "Distillation is enabled (distillation.source_transformer configured) "
+            "but loss does not use DistillationLoss. Add DistillationLoss to your "
+            "loss config (e.g. use MetaLoss with MSELoss + DistillationLoss)."
+        )
+    if uses_distillation and not distillation_enabled:
+        raise ValueError(
+            "Loss uses DistillationLoss but distillation is not enabled. "
+            "Add distillation.source_transformer with pretrained_model_name_or_path."
+        )
     total_bs = (
         train_cfg.batch_size
         * accelerator.num_processes
@@ -389,7 +464,7 @@ def main(args=None):
             }
 
             with accelerator.accumulate([transformer]):
-                loss = training_step_precomputed(
+                result = training_step_precomputed(
                     batch=batch,
                     transformer=transformer,
                     latents_bn_mean=latents_bn_mean,
@@ -402,7 +477,13 @@ def main(args=None):
                     guidance_scale=train_cfg.guidance_scale,
                     accelerator=accelerator,
                     loss_fn=loss_fn,
+                    source_transformer=source_transformer,
                 )
+                if isinstance(result, tuple):
+                    loss, loss_breakdown = result
+                else:
+                    loss = result
+                    loss_breakdown = {}
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
                     accelerator.clip_grad_norm_(
@@ -420,6 +501,8 @@ def main(args=None):
                     "loss": loss.detach().item(),
                     "lr": lr_scheduler.get_last_lr()[0],
                 }
+                for k, v in loss_breakdown.items():
+                    logs[f"loss/{k}"] = v
                 progress_bar.set_postfix(**logs)
                 accelerator.log(logs, step=global_step)
 

@@ -19,10 +19,12 @@ class FlowMatchingLossBase(ABC):
         pred: torch.Tensor,
         target: torch.Tensor,
         weighting: torch.Tensor,
+        **kwargs,
     ) -> torch.Tensor:
         """
         Compute loss. pred, target, weighting have same shape.
         Returns scalar (mean over batch).
+        Extra kwargs (e.g. teacher_pred for distillation) are passed for extensibility.
         """
         pass
 
@@ -35,6 +37,7 @@ class MSELoss(FlowMatchingLossBase):
         pred: torch.Tensor,
         target: torch.Tensor,
         weighting: torch.Tensor,
+        **kwargs,
     ) -> torch.Tensor:
         err = (pred.float() - target.float()) ** 2
         weighted = weighting.float() * err
@@ -50,6 +53,7 @@ class L1Loss(FlowMatchingLossBase):
         pred: torch.Tensor,
         target: torch.Tensor,
         weighting: torch.Tensor,
+        **kwargs,
     ) -> torch.Tensor:
         err = (pred.float() - target.float()).abs()
         weighted = weighting.float() * err
@@ -67,6 +71,7 @@ class HuberLoss(FlowMatchingLossBase):
         pred: torch.Tensor,
         target: torch.Tensor,
         weighting: torch.Tensor,
+        **kwargs,
     ) -> torch.Tensor:
         err = pred.float() - target.float()
         abs_err = err.abs()
@@ -83,6 +88,7 @@ class LogCoshLoss(FlowMatchingLossBase):
         pred: torch.Tensor,
         target: torch.Tensor,
         weighting: torch.Tensor,
+        **kwargs,
     ) -> torch.Tensor:
         err = pred.float() - target.float()
         logcosh = torch.log(torch.cosh(err.clamp(min=-50, max=50)))
@@ -90,4 +96,88 @@ class LogCoshLoss(FlowMatchingLossBase):
         return weighted.reshape(target.shape[0], -1).mean(1).mean()
 
 
-__all__ = ["FlowMatchingLossBase", "MSELoss", "L1Loss", "HuberLoss", "LogCoshLoss"]
+class DistillationLoss(FlowMatchingLossBase):
+    """
+    Pure distillation loss: student predictions match teacher predictions.
+    L = weighted MSE(pred, teacher_pred). Requires teacher_pred in kwargs.
+    """
+
+    def __call__(
+        self,
+        pred: torch.Tensor,
+        target: torch.Tensor,
+        weighting: torch.Tensor,
+        teacher_pred: torch.Tensor | None = None,
+        **kwargs,
+    ) -> torch.Tensor:
+        if teacher_pred is None:
+            return pred.new_tensor(0.0)
+        err = (pred.float() - teacher_pred.float()) ** 2
+        weighted = weighting.float() * err
+        return weighted.reshape(target.shape[0], -1).mean(1).mean()
+
+
+class MetaLoss(FlowMatchingLossBase):
+    """
+    Combines a sequence of losses with configurable scales.
+    L = sum(scale_i * loss_i(pred, target, weighting, **kwargs))
+    Returns (total, breakdown_dict) for logging each loss component.
+    """
+
+    def __init__(
+        self,
+        losses: list[tuple["FlowMatchingLossBase", float]] | list[tuple["FlowMatchingLossBase", float, str]],
+    ):
+        """
+        Args:
+            losses: List of (loss_instance, scale) or (loss_instance, scale, name).
+                    name is used for logging; defaults to type(loss_instance).__name__
+        """
+        self.losses: list[tuple["FlowMatchingLossBase", float, str]] = []
+        for item in losses:
+            if len(item) == 3:
+                self.losses.append(item)
+            else:
+                loss_fn, scale = item
+                self.losses.append((loss_fn, scale, type(loss_fn).__name__))
+
+    def __call__(
+        self,
+        pred: torch.Tensor,
+        target: torch.Tensor,
+        weighting: torch.Tensor,
+        **kwargs,
+    ) -> tuple[torch.Tensor, dict[str, float]]:
+        total = pred.new_tensor(0.0)
+        breakdown: dict[str, float] = {}
+        for loss_fn, scale, name in self.losses:
+            val = loss_fn(
+                pred=pred, target=target, weighting=weighting, **kwargs
+            )
+            scaled = scale * val
+            total = total + scaled
+            breakdown[name] = scaled.detach().item()
+        return total, breakdown
+
+
+def _loss_uses_distillation(loss_fn: FlowMatchingLossBase) -> bool:
+    """True if loss requires teacher_pred (DistillationLoss or MetaLoss containing it)."""
+    if type(loss_fn).__name__ == "DistillationLoss":
+        return True
+    if type(loss_fn).__name__ == "MetaLoss":
+        return any(
+            _loss_uses_distillation(l) for l, _, _ in loss_fn.losses
+        )
+    return False
+
+
+__all__ = [
+    "FlowMatchingLossBase",
+    "MSELoss",
+    "L1Loss",
+    "HuberLoss",
+    "LogCoshLoss",
+    "DistillationLoss",
+    "MetaLoss",
+    "_loss_uses_distillation",
+]

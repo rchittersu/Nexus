@@ -108,6 +108,22 @@ class TestLoadConfigFull:
         assert hasattr(cfg.optimizer, "_class")
         assert cfg.train.max_steps == 1000
 
+    def test_load_distillation_resolves_source_transformer_and_metaloss(self, config_dir):
+        """distillation.yaml resolves source_transformer and MetaLoss with losses."""
+        if not (config_dir / "distillation.yaml").exists():
+            pytest.skip("configs/klein4b/distillation.yaml not found")
+        cfg = load_config(config_dir / "distillation.yaml")
+        assert hasattr(cfg, "distillation")
+        assert hasattr(cfg.distillation, "source_transformer")
+        st = cfg.distillation.source_transformer
+        assert hasattr(st, "_class")
+        assert st._class.__name__ == "Flux2Transformer2DModel"
+        assert cfg.loss._class.__name__ == "MetaLoss"
+        losses = cfg.loss.kwargs.losses
+        assert len(losses) == 2
+        assert hasattr(losses[0], "_class") or losses[0].get("_class")
+        assert hasattr(losses[1], "_class") or losses[1].get("_class")
+
 
 class TestParseArgs:
     """Tests for parse_args()."""

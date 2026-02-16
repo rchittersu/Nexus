@@ -1,0 +1,31 @@
+# Distillation training: student learns from a source (teacher) transformer.
+# Usage: accelerate launch -m nexus.train.main --config configs/klein4b/distillation.yaml
+
+extends: base.yaml
+
+distillation:
+  source_transformer:
+    pretrained_model_name_or_path: black-forest-labs/FLUX.2-klein-base-4B
+    class_name: diffusers:Flux2Transformer2DModel
+    subfolder: transformer
+    revision: null
+    variant: null
+
+loss:
+  class_name: nexus.train.losses:MetaLoss
+  kwargs:
+    losses:
+      - class_name: nexus.train.losses:MSELoss
+        scale: 0.5
+        name: flow
+      - class_name: nexus.train.losses:DistillationLoss
+        scale: 0.5
+        name: distillation
+
+train:
+  batch_size: 4
+  max_steps: 1000
+  learning_rate: 1.0e-4
+
+output_dir: flux2-precomputed-distillation
+checkpointing_steps: 500

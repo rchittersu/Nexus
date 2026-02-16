@@ -82,8 +82,9 @@ Choose multi-GPU / single-GPU and mixed precision as needed.
 Nexus/
 ├── configs/
 │   └── klein4b/
-│       ├── base.yaml      # Shared Flux2 Klein 4B defaults
-│       └── run1.yaml      # Experiment config (extends base)
+│       ├── base.yaml        # Shared Flux2 Klein 4B defaults
+│       ├── run1.yaml        # Experiment config (extends base)
+│       └── distillation.yaml  # Distillation training (teacher-student)
 ├── scripts/
 │   └── train.sh           # ./scripts/train.sh <config> [--overrides...]
 ├── src/nexus/
@@ -91,7 +92,7 @@ Nexus/
 │   │   ├── main.py        # Entrypoint
 │   │   ├── config.py      # YAML load, extends, class resolution
 │   │   ├── train_loop.py  # Flow-matching step
-│   │   ├── losses.py      # MSE, L1, Huber, LogCosh
+│   │   ├── losses.py      # MSE, L1, Huber, LogCosh, DistillationLoss
 │   │   └── validation.py  # Image gen + tracker logs
 │   ├── models/
 │   │   └── transformer_wrapper.py   # Generic LoRA/full wrapper
@@ -201,7 +202,8 @@ output_dir: runs/exp1
 | `dataset` | Class + kwargs for `PrecomputedSSTKDataset` |
 | `model` | Transformer, VAE, scheduler, pipeline, wrapper (Flux2 Klein by default) |
 | `train` | Batch size, steps, LR, gradient accumulation, etc. |
-| `loss` | `class_name` (MSELoss, L1Loss, HuberLoss, LogCoshLoss) + weighting |
+| `loss` | `class_name` (MSELoss, L1Loss, HuberLoss, LogCoshLoss, DistillationLoss, MetaLoss) + kwargs |
+| `distillation` | `source_transformer` path + `alpha` for teacher-student training |
 | `lora` | Rank, alpha, dropout, target_modules |
 | `validation` | Steps, prompt (set to enable), num_images |
 | `mlflow` | `experiment_name`, `tracking_uri` |
@@ -217,6 +219,48 @@ loss:
   weighting_scheme: none  # none, sigma_sqrt, logit_normal, mode, cosmap
 ```
 
+### Distillation
+
+Train with a source (teacher) transformer. `DistillationLoss` is pure distillation (pred vs teacher_pred only). Use `MetaLoss` to combine flow-matching and distillation:
+
+```yaml
+distillation:
+  source_transformer:
+    pretrained_model_name_or_path: path/to/teacher
+    class_name: diffusers:Flux2Transformer2DModel
+    subfolder: transformer
+
+loss:
+  class_name: nexus.train.losses:MetaLoss
+  kwargs:
+    losses:
+      - class_name: nexus.train.losses:MSELoss
+        scale: 0.5
+        name: flow
+      - class_name: nexus.train.losses:DistillationLoss
+        scale: 0.5
+        name: distillation
+```
+
+### MetaLoss
+
+Combine multiple losses with configurable scales: `L = sum(scale_i * loss_i(...))`. Each component is logged as `loss/{name}` (e.g. in TensorBoard/MLflow):
+
+```yaml
+loss:
+  class_name: nexus.train.losses:MetaLoss
+  kwargs:
+    losses:
+      - class_name: nexus.train.losses:MSELoss
+        scale: 1.0
+        name: flow
+      - class_name: nexus.train.losses:L1Loss
+        scale: 0.1
+        name: l1
+```
+
+When distillation is enabled, the loss must include `DistillationLoss` (e.g. via MetaLoss). If `DistillationLoss` is used without distillation config, training will raise an error.
+
 ### Transformer wrapper
 
 Generic for Flux2, SD3, etc. Use `component_name: transformer` (Flux2) or `component_name: unet` (SD-style).
@@ -228,7 +272,7 @@ Generic for Flux2, SD3, etc. Use `component_name: transformer` (Flux2) or `compo
 With `report_to: mlflow` (default in Klein configs):
 
 - Logs go to `{output_dir}/mlruns`
-- Metrics: loss, lr
+- Metrics: loss, lr; MetaLoss components logged as loss/flow, loss/distillation, etc.
 - Validation images: logged when `validation.prompt` is set
 - Config and hyperparams: stored with the run
 
