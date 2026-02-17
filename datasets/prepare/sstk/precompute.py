@@ -1,6 +1,4 @@
-import hashlib
 import os
-import re
 from argparse import ArgumentParser
 from typing import Dict, List, Optional, Union
 
@@ -105,15 +103,6 @@ def _sample_caption(
     idx = rng.choice(len(captions), p=weights)
     chosen = captions[idx]
     return text_preprocessing(chosen, clean)[0]
-
-
-def _caption_to_debug_filename(caption: str, batch_idx: int) -> str:
-    """Build a filesystem-safe filename from caption for debug .pt dumps."""
-    # Sanitize: keep alphanumeric, spaces, hyphens; replace rest with _
-    sanitized = re.sub(r"[^\w\s-]", "", caption)
-    sanitized = re.sub(r"\s+", "_", sanitized.strip())[:60].rstrip("_") or "caption"
-    h = hashlib.md5(caption.encode()).hexdigest()[:8]
-    return f"{sanitized}_{h}_{batch_idx}.pt"
 
 
 """Example usage:
@@ -230,18 +219,6 @@ def parse_args() -> ArgumentParser:
         help="Weights for sampling among multiple captions by index (e.g. 0.5,0.3,0.2). "
         "If fewer weights than captions, remaining indices get equal weight. Default: uniform.",
     )
-    parser.add_argument(
-        "--debug_text_embeds",
-        default=False,
-        action="store_true",
-        help="If True, save raw text embeddings from encoder as .pt files (filename derived from caption).",
-    )
-    parser.add_argument(
-        "--debug_text_embeds_dir",
-        type=str,
-        default="",
-        help="Directory for debug text embed .pt files. Default: {savedir}/debug_text_embeds",
-    )
     args = parser.parse_args()
     if isinstance(args.image_resolutions, int):
         args.image_resolutions = [args.image_resolutions]
@@ -347,10 +324,6 @@ def main(args: ArgumentParser) -> None:
     if args.save_images:
         columns["image"] = 'jpeg'
 
-    debug_embeds_dir = args.debug_text_embeds_dir or os.path.join(args.savedir, "debug_text_embeds")
-    if args.debug_text_embeds:
-        os.makedirs(debug_embeds_dir, exist_ok=True)
-
     remote_upload = os.path.join(args.savedir, str(accelerator.process_index))
     writer = MDSWriter(
         out=remote_upload,
@@ -361,7 +334,6 @@ def main(args: ArgumentParser) -> None:
     )
 
 
-    sample_idx = 0
     for batch in tqdm(dataloader):
         # Stack images for each resolution
         images = [
@@ -408,15 +380,6 @@ def main(args: ArgumentParser) -> None:
                             max_sequence_length=args.max_sequence_length,
                             text_encoder_out_layers=args.text_encoder_out_layers,
                         )
-                        if args.debug_text_embeds:
-                            for i in range(batch_size):
-                                fn = _caption_to_debug_filename(
-                                    captions_to_encode[i], sample_idx + i
-                                )
-                                torch.save(
-                                    prompt_embeds[i].detach().cpu(),
-                                    os.path.join(debug_embeds_dir, fn),
-                                )
                         prompt_embeds = prompt_embeds.to(DATA_TYPES[args.save_dtype]).detach().cpu().numpy()
                         text_ids = text_ids.to(torch.int8).detach().cpu().numpy()
 
@@ -434,7 +397,6 @@ def main(args: ArgumentParser) -> None:
                 if args.save_images:
                     mds_sample["image"] = batch["sample"][i][image_key]
                 writer.write(mds_sample)
-            sample_idx += batch_size
         except RuntimeError as e:
             print(f"Runtime error CUDA, skipping this batch: {e}")
 
