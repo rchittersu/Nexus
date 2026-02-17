@@ -35,7 +35,7 @@ def build_streaming_sstk_t2i_dataloader(
     image_key: str = 'image',
     caption_key: str = 'caption',
     clean_caption: bool = True,
-    num_canonical_nodes: Optional[int] = None,
+    world_size: Optional[int] = None,
 ) -> DataLoader:
     assert resize_sizes is not None, 'Must provide target resolution for image resizing'
 
@@ -54,16 +54,24 @@ def build_streaming_sstk_t2i_dataloader(
         for size in resize_sizes
     ]
 
-    dataset = StreamingT2IDataset(
-        streams=streams,
-        transforms_list=transforms_list,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        image_key=image_key,
-        caption_key=caption_key,
-        clean_caption=clean_caption,
-        num_canonical_nodes=num_canonical_nodes,
-    )
+    init_kwargs: dict = {
+        "streams": streams,
+        "transforms_list": transforms_list,
+        "batch_size": batch_size,
+        "shuffle": shuffle,
+        "image_key": image_key,
+        "caption_key": caption_key,
+        "clean_caption": clean_caption,
+    }
+    dataset = StreamingT2IDataset(**init_kwargs)
+    # When data size isn't divisible by world_size, partitioning pads and creates duplicates.
+    # Truncate epoch_size to a multiple of world_size to avoid wraparound.
+    if world_size is not None and world_size > 1:
+        size = getattr(dataset, "size", None)
+        if size is not None and size > 0 and size % world_size != 0:
+            epoch_size = (size // world_size) * world_size
+            init_kwargs["epoch_size"] = epoch_size
+            dataset = StreamingT2IDataset(**init_kwargs)
 
     def custom_collate(batch_items: List[Dict]) -> Dict:
         out = {k: [] for k in batch_items[0].keys()}
@@ -287,7 +295,7 @@ def main(args: ArgumentParser) -> None:
     if accelerator.num_processes > 1:
         os.environ["RANK"] = str(accelerator.process_index)
         os.environ["WORLD_SIZE"] = str(accelerator.num_processes)
-    num_canonical = accelerator.num_processes if accelerator.num_processes > 1 else None
+    world_size = accelerator.num_processes if accelerator.num_processes > 1 else None
     dataloader = build_streaming_sstk_t2i_dataloader(
         datadir=args.datadir,
         batch_size=args.batch_size,
@@ -297,7 +305,7 @@ def main(args: ArgumentParser) -> None:
         image_key=image_key,
         caption_key=caption_key,
         clean_caption=True,
-        num_canonical_nodes=num_canonical,
+        world_size=world_size,
     )
     # Avoid accelerator.prepare(dataloader): StreamingDataset handles distributed via RANK/WORLD_SIZE
     # env vars. prepare() injects DistributedSampler which conflicts and causes deadlock (see

@@ -18,15 +18,15 @@ class StreamingT2IDataset(StreamingDataset):
         image_key: str = "image",
         caption_key: str = "caption",
         clean_caption: bool = False,
-        num_canonical_nodes: int | None = None,
+        epoch_size: int | None = None,
     ) -> None:
         init_kwargs: dict = {
             "streams": streams,
             "shuffle": shuffle,
             "batch_size": batch_size,
         }
-        if num_canonical_nodes is not None:
-            init_kwargs["num_canonical_nodes"] = num_canonical_nodes
+        if epoch_size is not None:
+            init_kwargs["epoch_size"] = epoch_size
         super().__init__(**init_kwargs)
 
         assert transforms_list is not None, (
