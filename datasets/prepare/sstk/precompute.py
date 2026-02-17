@@ -403,17 +403,7 @@ def main(args: ArgumentParser) -> None:
     writer.finish()
 
     # Wait for all processes to finish
-    accelerator.wait_for_everyone()
     print(f"Process {accelerator.process_index} finished")
-
-    # Merge the mds shards created by each device (only do on main process)
-    if accelerator.is_main_process:
-        shards_metadata = [
-            os.path.join(args.savedir, str(i), "index.json")
-            for i in range(accelerator.num_processes)
-        ]
-        merge_index(shards_metadata, out=args.savedir, keep_local=True)
-
     accelerator.wait_for_everyone()
 
     # Free GPU memory and sync before exit to avoid SIGSEGV (exit code 11) during
@@ -423,6 +413,21 @@ def main(args: ArgumentParser) -> None:
         del text_encoding_pipeline, text_encoder, vae
         torch.cuda.synchronize()
         torch.cuda.empty_cache()
+
+    accelerator.wait_for_everyone()
+    if torch.distributed.is_initialized():
+        torch.distributed.destroy_process_group()
+
+    # Merge the mds shards created by each device (only do on main process)
+    if accelerator.is_main_process:
+        shards_metadata = [
+            os.path.join(args.savedir, str(i), "index.json")
+            for i in range(accelerator.num_processes)
+        ]
+        merge_index(shards_metadata, out=args.savedir, keep_local=True)
+
+
+    exit(0)
 
 
 if __name__ == "__main__":
