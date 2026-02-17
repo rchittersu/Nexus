@@ -1,5 +1,4 @@
 import os
-import time
 from argparse import ArgumentParser
 from typing import Dict, List, Optional, Union
 
@@ -261,9 +260,8 @@ def main(args: ArgumentParser) -> None:
     text_encoder = Qwen3ForCausalLM.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="text_encoder",
         torch_dtype=DATA_TYPES[args.model_dtype],
-    )
+    ).to(device).eval()
     text_encoder.requires_grad_(False)
-    text_encoder.to(device)
 
     tokenizer = Qwen2TokenizerFast.from_pretrained(
         args.pretrained_model_name_or_path,
@@ -406,7 +404,6 @@ def main(args: ArgumentParser) -> None:
     # Wait for all processes to finish
     accelerator.wait_for_everyone()
     print(f"Process {accelerator.process_index} finished")
-    time.sleep(10)
 
     # Merge the mds shards created by each device (only do on main process)
     if accelerator.is_main_process:
@@ -415,6 +412,10 @@ def main(args: ArgumentParser) -> None:
             for i in range(accelerator.num_processes)
         ]
         merge_index(shards_metadata, out=args.savedir, keep_local=True)
+
+    accelerator.wait_for_everyone()
+    if torch.distributed.is_initialized():
+        torch.distributed.destroy_process_group()
 
 
 if __name__ == "__main__":
