@@ -271,6 +271,7 @@ def main(args: ArgumentParser) -> None:
     # initialise text encoding pipeline
     text_encoding_pipeline = Flux2KleinPipeline.from_pretrained(
         args.pretrained_model_name_or_path,
+        scheduler=None,
         vae=None,
         transformer=None,
         tokenizer=tokenizer,
@@ -414,8 +415,14 @@ def main(args: ArgumentParser) -> None:
         merge_index(shards_metadata, out=args.savedir, keep_local=True)
 
     accelerator.wait_for_everyone()
-    if torch.distributed.is_initialized():
-        torch.distributed.destroy_process_group()
+
+    # Free GPU memory and sync before exit to avoid SIGSEGV (exit code 11) during
+    # the launcher's exit barrier. Explicit destroy_process_group can conflict with
+    # torchrun's _exit_barrier and trigger segfaults.
+    if torch.cuda.is_available():
+        del text_encoding_pipeline, text_encoder, vae
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
 
 
 if __name__ == "__main__":
