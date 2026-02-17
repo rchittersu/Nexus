@@ -35,6 +35,7 @@ def build_streaming_sstk_t2i_dataloader(
     image_key: str = 'image',
     caption_key: str = 'caption',
     clean_caption: bool = True,
+    num_canonical_nodes: Optional[int] = None,
 ) -> DataLoader:
     assert resize_sizes is not None, 'Must provide target resolution for image resizing'
 
@@ -61,6 +62,7 @@ def build_streaming_sstk_t2i_dataloader(
         image_key=image_key,
         caption_key=caption_key,
         clean_caption=clean_caption,
+        num_canonical_nodes=num_canonical_nodes,
     )
 
     def custom_collate(batch_items: List[Dict]) -> Dict:
@@ -280,6 +282,12 @@ def main(args: ArgumentParser) -> None:
 
     caption_key = "caption"
     image_key = "image"
+    # Ensure RANK/WORLD_SIZE are set for StreamingDataset partitioning (accelerate sets these,
+    # but we ensure they match our process state)
+    if accelerator.num_processes > 1:
+        os.environ["RANK"] = str(accelerator.process_index)
+        os.environ["WORLD_SIZE"] = str(accelerator.num_processes)
+    num_canonical = accelerator.num_processes if accelerator.num_processes > 1 else None
     dataloader = build_streaming_sstk_t2i_dataloader(
         datadir=args.datadir,
         batch_size=args.batch_size,
@@ -289,6 +297,7 @@ def main(args: ArgumentParser) -> None:
         image_key=image_key,
         caption_key=caption_key,
         clean_caption=True,
+        num_canonical_nodes=num_canonical,
     )
     # Avoid accelerator.prepare(dataloader): StreamingDataset handles distributed via RANK/WORLD_SIZE
     # env vars. prepare() injects DistributedSampler which conflicts and causes deadlock (see
