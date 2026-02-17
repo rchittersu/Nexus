@@ -35,7 +35,6 @@ def build_streaming_sstk_t2i_dataloader(
     image_key: str = 'image',
     caption_key: str = 'caption',
     clean_caption: bool = True,
-    **dataloader_kwargs,
 ) -> DataLoader:
     assert resize_sizes is not None, 'Must provide target resolution for image resizing'
 
@@ -71,12 +70,13 @@ def build_streaming_sstk_t2i_dataloader(
                 out[key].append(value)
         return out
 
+    # num_workers=0 required: StreamingDataset + multiprocessing workers causes deadlock with DDP
     dataloader = DataLoader(
         dataset=dataset,
         batch_size=batch_size,
         drop_last=drop_last,
         collate_fn=custom_collate,
-        **dataloader_kwargs,
+        num_workers=0,
     )
 
     return dataloader
@@ -280,12 +280,6 @@ def main(args: ArgumentParser) -> None:
 
     caption_key = "caption"
     image_key = "image"
-    # Use num_workers=0 when multi-GPU to avoid barrier/CUDA init warnings from forked workers
-    num_workers = 0 if accelerator.num_processes > 1 else 2
-    dataloader_kwargs = dict(num_workers=num_workers, pin_memory=True)
-    if num_workers > 0:
-        dataloader_kwargs["prefetch_factor"] = 2
-        dataloader_kwargs["persistent_workers"] = True
     dataloader = build_streaming_sstk_t2i_dataloader(
         datadir=args.datadir,
         batch_size=args.batch_size,
@@ -295,14 +289,24 @@ def main(args: ArgumentParser) -> None:
         image_key=image_key,
         caption_key=caption_key,
         clean_caption=True,
-        **dataloader_kwargs,
     )
-    dataloader = accelerator.prepare(dataloader)
+    # Avoid accelerator.prepare(dataloader): StreamingDataset handles distributed via RANK/WORLD_SIZE
+    # env vars. prepare() injects DistributedSampler which conflicts and causes deadlock (see
+    # mosaicml/streaming#307). Only prepare when single-process.
+    if accelerator.num_processes == 1:
+        dataloader = accelerator.prepare(dataloader)
 
 
+    ds = dataloader.dataset
+    n_samples = getattr(ds, "size", None)
+    if n_samples is None:
+        try:
+            n_samples = len(ds)
+        except (TypeError, NotImplementedError):
+            n_samples = "?"
     print(
         f"Device: {device_idx}, world size: {accelerator.num_processes}, "
-        f"dataloader samples: {len(dataloader.dataset)}, {device}"
+        f"dataset samples: {n_samples}, {device}"
     )
 
     columns = {'caption': 'str'}
