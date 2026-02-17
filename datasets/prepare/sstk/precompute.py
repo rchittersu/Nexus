@@ -8,7 +8,7 @@ import torch
 from accelerate import Accelerator
 from diffusers import AutoencoderKLFlux2, Flux2KleinPipeline
 from diffusers.models.modeling_outputs import AutoencoderKLOutput
-from streaming import MDSWriter
+from streaming import MDSWriter, Stream
 from streaming.base.util import merge_index
 from torch.utils.data import DataLoader
 from torchvision import transforms
@@ -18,6 +18,12 @@ from transformers import Qwen2TokenizerFast, Qwen3ForCausalLM
 from nexus.data.t2i_dataset import StreamingT2IDataset
 from nexus.data.utils import text_preprocessing
 from nexus.utils import DATA_TYPES
+
+
+def _datadir_to_streams(datadir: Union[List[str], str]) -> List[Stream]:
+    """Convert datadir (str or list of strs) to list of Stream for StreamingDataset."""
+    paths = [datadir] if isinstance(datadir, str) else list(datadir)
+    return [Stream(local=p) for p in paths]
 
 
 def build_streaming_sstk_t2i_dataloader(
@@ -33,6 +39,8 @@ def build_streaming_sstk_t2i_dataloader(
 ) -> DataLoader:
     assert resize_sizes is not None, 'Must provide target resolution for image resizing'
 
+    streams = _datadir_to_streams(datadir)
+
     transforms_list = [
         transforms.Compose([
                 transforms.Resize(
@@ -47,7 +55,7 @@ def build_streaming_sstk_t2i_dataloader(
     ]
 
     dataset = StreamingT2IDataset(
-        streams=datadir,
+        streams=streams,
         transforms_list=transforms_list,
         batch_size=batch_size,
         shuffle=shuffle,
@@ -226,6 +234,10 @@ def main(args: ArgumentParser) -> None:
     Note that the image latents will be scaled by the vae_scaling_factor.
     """
 
+    # Set device before distributed init to avoid "using gpu x to perform barrier" warning
+    if torch.cuda.is_available() and "LOCAL_RANK" in os.environ:
+        torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
+
     accelerator = Accelerator()
     device = accelerator.device
     device_idx = int(accelerator.process_index)
@@ -275,7 +287,7 @@ def main(args: ArgumentParser) -> None:
         dataloader_kwargs["prefetch_factor"] = 2
         dataloader_kwargs["persistent_workers"] = True
     dataloader = build_streaming_sstk_t2i_dataloader(
-        datadir=[args.datadir],
+        datadir=args.datadir,
         batch_size=args.batch_size,
         resize_sizes=args.image_resolutions,
         drop_last=False,

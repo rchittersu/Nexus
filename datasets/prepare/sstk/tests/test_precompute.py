@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from precompute import (
     parse_args,
     _caption_sample_weights,
+    _datadir_to_streams,
     _sample_caption,
 )
 
@@ -123,6 +124,24 @@ class TestParseArgs:
         ]):
             args = parse_args()
             assert args.caption_sample_weights == [0.5, 0.3, 0.2]
+
+
+class TestDatadirToStreams:
+    """Tests for _datadir_to_streams helper."""
+
+    def test_single_path_to_streams(self):
+        """Single str becomes list of one Stream."""
+        from streaming import Stream
+        streams = _datadir_to_streams("/path/to/mds")
+        assert len(streams) == 1
+        assert isinstance(streams[0], Stream)
+
+    def test_list_of_paths_to_streams(self):
+        """List of strs becomes list of Streams."""
+        from streaming import Stream
+        streams = _datadir_to_streams(["/a", "/b", "/c"])
+        assert len(streams) == 3
+        assert all(isinstance(s, Stream) for s in streams)
 
 
 class TestCaptionSampleWeights:
