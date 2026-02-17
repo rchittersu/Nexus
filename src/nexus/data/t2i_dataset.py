@@ -18,16 +18,12 @@ class StreamingT2IDataset(StreamingDataset):
         image_key: str = "image",
         caption_key: str = "caption",
         clean_caption: bool = False,
-        epoch_size: int | None = None,
     ) -> None:
-        init_kwargs: dict = {
-            "streams": streams,
-            "shuffle": shuffle,
-            "batch_size": batch_size,
-        }
-        if epoch_size is not None:
-            init_kwargs["epoch_size"] = epoch_size
-        super().__init__(**init_kwargs)
+        super().__init__(
+            streams=streams,
+            shuffle=shuffle,
+            batch_size=batch_size,
+        )
 
         assert transforms_list is not None, (
             "Must provide transforms to resize and center crop images"
