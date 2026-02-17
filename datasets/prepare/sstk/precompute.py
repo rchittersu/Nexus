@@ -256,26 +256,14 @@ def main(args: ArgumentParser) -> None:
         torch_dtype=DATA_TYPES[args.model_dtype],
     ).to(device).eval()
     vae = torch.compile(vae)
-
-    text_encoder = Qwen3ForCausalLM.from_pretrained(
-        args.pretrained_model_name_or_path, subfolder="text_encoder",
-        torch_dtype=DATA_TYPES[args.model_dtype],
-    ).to(device).eval()
-    text_encoder.requires_grad_(False)
-
-    tokenizer = Qwen2TokenizerFast.from_pretrained(
-        args.pretrained_model_name_or_path,
-        subfolder="tokenizer",
-    )
-
+    
     # initialise text encoding pipeline
     text_encoding_pipeline = Flux2KleinPipeline.from_pretrained(
         args.pretrained_model_name_or_path,
         vae=None,
         transformer=None,
-        tokenizer=tokenizer,
-        text_encoder=text_encoder,
     )
+    text_encoding_pipeline.to(dtype=DATA_TYPES[args.model_dtype], device=device).eval()
 
     caption_key = "caption"
     image_key = "image"
