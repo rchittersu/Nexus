@@ -30,10 +30,13 @@ run_prepare() {
 
 run_precompute() {
     echo "=== Running precompute ==="
-    accelerate launch --multi_gpu --num_processes 8 \
-        "$SCRIPT_DIR/precompute.py" \
+    # Uses plain python + multiprocessing (no accelerate). Each worker processes
+    # one prepare.py subfolder (0, 1, 2, ...) independently. num_proc should match
+    # prepare --num_proc or be omitted to auto-detect from subfolders.
+    python "$SCRIPT_DIR/precompute.py" \
         --datadir "${MDS_DIR}/" \
         --savedir "${LATENTS_DIR}/" \
+        --num_proc 16 \
         --image_resolutions 512 1024 \
         --pretrained_model_name_or_path black-forest-labs/FLUX.2-klein-base-4B \
         --batch_size 32 \

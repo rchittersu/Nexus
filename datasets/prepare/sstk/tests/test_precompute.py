@@ -24,6 +24,8 @@ from precompute import (
     parse_args,
     _caption_sample_weights,
     _datadir_to_streams,
+    _discover_subfolders,
+    _partition_subfolders,
     _sample_caption,
 )
 
@@ -48,6 +50,7 @@ class TestParseArgs:
         with patch.object(sys, 'argv', ['precompute.py', '--datadir', '/path/to/mds']):
             args = parse_args()
             assert args.savedir == ''
+            assert args.num_proc is None
             assert args.image_resolutions == [512, 1024]
             assert args.save_images is False
             assert args.model_dtype == 'bfloat16'
@@ -104,6 +107,15 @@ class TestParseArgs:
             args = parse_args()
             assert args.image_resolutions == [512]
 
+    def test_num_proc_parsed(self):
+        """--num_proc is parsed correctly."""
+        with patch.object(sys, 'argv', [
+            'precompute.py', '--datadir', '/data',
+            '--num_proc', '8',
+        ]):
+            args = parse_args()
+            assert args.num_proc == 8
+
     def test_missing_datadir_raises(self):
         """Missing required --datadir raises SystemExit."""
         with patch.object(sys, 'argv', ['precompute.py']):
@@ -124,6 +136,58 @@ class TestParseArgs:
         ]):
             args = parse_args()
             assert args.caption_sample_weights == [0.5, 0.3, 0.2]
+
+
+class TestDiscoverSubfolders:
+    """Tests for _discover_subfolders helper."""
+
+    def test_empty_when_not_dir(self, tmp_path):
+        """Returns [] when path is not a directory."""
+        missing = tmp_path / 'nonexistent'
+        assert _discover_subfolders(str(missing)) == []
+
+    def test_discovers_numeric_subdirs(self, tmp_path):
+        """Discovers subdirs 0, 1, 2, ... in sorted order."""
+        (tmp_path / '0').mkdir()
+        (tmp_path / '1').mkdir()
+        (tmp_path / '2').mkdir()
+        result = _discover_subfolders(str(tmp_path))
+        assert result == [
+            str(tmp_path / '0'),
+            str(tmp_path / '1'),
+            str(tmp_path / '2'),
+        ]
+
+    def test_ignores_non_numeric_and_files(self, tmp_path):
+        """Ignores non-numeric dirs and files."""
+        (tmp_path / '0').mkdir()
+        (tmp_path / 'foo').mkdir()
+        (tmp_path / '00').mkdir()
+        (tmp_path / 'index.json').write_text('{}')
+        result = _discover_subfolders(str(tmp_path))
+        assert result == [str(tmp_path / '0'), str(tmp_path / '00')]
+
+
+class TestPartitionSubfolders:
+    """Tests for _partition_subfolders helper."""
+
+    def test_fewer_workers_than_subfolders(self):
+        """Subfolders distributed as multiple streams per worker."""
+        subfolders = [f'/mds/{i}' for i in range(8)]
+        result = _partition_subfolders(subfolders, num_proc=2)
+        assert len(result) == 2
+        assert result[0] == ['/mds/0', '/mds/1', '/mds/2', '/mds/3']
+        assert result[1] == ['/mds/4', '/mds/5', '/mds/6', '/mds/7']
+
+    def test_more_workers_than_subfolders(self):
+        """One subfolder per worker when workers >= subfolders."""
+        subfolders = ['/mds/0', '/mds/1']
+        result = _partition_subfolders(subfolders, num_proc=4)
+        assert len(result) == 4
+        assert result[0] == ['/mds/0']
+        assert result[1] == ['/mds/1']
+        assert result[2] == []
+        assert result[3] == []
 
 
 class TestDatadirToStreams:
@@ -326,13 +390,14 @@ class TestPrecomputeIntegration:
 
         assert mds_dir.exists()
 
-        # 3. Run precompute via subprocess (accelerate launch script)
+        # 3. Run precompute via subprocess (plain python, multiprocessing; no accelerate)
         precompute_script = Path(__file__).resolve().parents[1] / 'precompute.py'
         cmd = [
-            'accelerate', 'launch', '--num_processes', '1',
+            sys.executable,
             str(precompute_script),
             '--datadir', str(mds_dir),
             '--savedir', str(latents_dir),
+            '--num_proc', '1',
             '--image_resolutions', '512',
             '--batch_size', '2',
             '--pretrained_model_name_or_path', 'black-forest-labs/FLUX.2-klein-base-4B',

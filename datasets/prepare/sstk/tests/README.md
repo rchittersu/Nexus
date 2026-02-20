@@ -5,7 +5,7 @@ Tests for `prepare.py` (images → MDS) and `precompute.py` (MDS → latents + t
 ## Requirements
 
 - **Unit tests**: `pytest`, `numpy`, `PIL`, `mosaicml-streaming`
-- **Integration tests**: above + `torch`, `diffusers`, `transformers`, `accelerate`; CUDA GPU for precompute
+- **Integration tests**: above + `torch`, `diffusers`, `transformers`; CUDA GPU for precompute
 
 ## Running Tests
 
@@ -31,7 +31,7 @@ Integration tests are slower and require additional setup:
 python -m pytest datasets/prepare/sstk/tests/test_prepare.py::TestIntegrationPrepareAndRead -v
 
 # Precompute integration: prepare → precompute → read shards → decode latent + re-encode text → verify similarity
-# Requires: CUDA, accelerate, FLUX.2-klein-base-4B model (cached)
+# Requires: CUDA, FLUX.2-klein-base-4B model (cached)
 python -m pytest datasets/prepare/sstk/tests/test_precompute.py::TestPrecomputeIntegration -v
 ```
 
