@@ -1,10 +1,10 @@
 import os
 from argparse import ArgumentParser
-from typing import Dict, List, Optional, Union
+from multiprocessing import get_context
+from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
-from accelerate import Accelerator
 from diffusers import AutoencoderKLFlux2, Flux2KleinPipeline
 from diffusers.models.modeling_outputs import AutoencoderKLOutput
 from streaming import MDSWriter, Stream
@@ -70,13 +70,13 @@ def build_streaming_sstk_t2i_dataloader(
                 out[key].append(value)
         return out
 
-    # num_workers=0 required: StreamingDataset + multiprocessing workers causes deadlock with DDP
+    # num_workers=0: StreamingDataset + multiprocessing workers can deadlock
     dataloader = DataLoader(
         dataset=dataset,
         batch_size=batch_size,
         drop_last=drop_last,
         collate_fn=custom_collate,
-        num_workers=0,
+        num_workers=2,
     )
 
     return dataloader
@@ -105,12 +105,27 @@ def _sample_caption(
     return text_preprocessing(chosen, clean)[0]
 
 
+def _discover_subfolders(datadir: str) -> List[str]:
+    """Discover worker subfolders (0, 1, 2, ...) from prepare.py output under datadir."""
+    if not os.path.isdir(datadir):
+        return []
+    subfolders = []
+    for name in sorted(os.listdir(datadir)):
+        subpath = os.path.join(datadir, name)
+        if os.path.isdir(subpath) and name.isdigit():
+            subfolders.append(subpath)
+    return subfolders
+
+
 """Example usage:
-accelerate launch --multi_gpu --num_processes 8 precompute.py \
+# Multi-process: each worker gets multiple prepare.py subfolders as streams (no accelerate):
+python precompute.py \
     --datadir ./sa1b/mds/ \
-    --savedir ./sa1b/mds_latents_sdxl1_dfnclipH14/ \
+    --savedir ./sa1b/mds_latents_flux2/ \
+    --num_proc 8 \
     --pretrained_model_name_or_path <path_to_pretrained_model> \
     --batch_size 32
+# With 16 prepare subfolders and --num_proc 8: each worker processes 2 subfolders as streams.
 """
 
 
@@ -128,6 +143,13 @@ def parse_args() -> ArgumentParser:
         type=str,
         default="",
         help="Remote path to upload MDS-formatted shards to.",
+    )
+    parser.add_argument(
+        "--num_proc",
+        type=int,
+        default=None,
+        help="Number of worker processes. If None, use one per prepare.py subfolder. "
+        "Each worker gets multiple subfolders as streams.",
     )
     parser.add_argument(
         "--image_resolutions",
@@ -225,40 +247,35 @@ def parse_args() -> ArgumentParser:
     return args
 
 
-def main(args: ArgumentParser) -> None:
-    """Precompute image and text latents and store them in MDS format.
+def _precompute_worker(task: Tuple[List[str], int, object]) -> None:
+    """Worker: load multiple subfolders as streams, encode, write to savedir/{worker_idx}."""
+    subfolder_paths, worker_idx, args = task
 
-    By default, saves image latents for 512x512 and 1024x1024 resolutions
-    (using center crop), and text embeddings from the Qwen text encoder.
+    # Assign GPU round-robin
+    if torch.cuda.is_available():
+        num_gpus = torch.cuda.device_count()
+        device_idx = worker_idx % num_gpus
+        device = torch.device("cuda", device_idx)
+        torch.cuda.set_device(device_idx)
+    else:
+        device = torch.device("cpu")
 
-    Note that the image latents will be scaled by the vae_scaling_factor.
-    """
+    torch.manual_seed(worker_idx + args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(worker_idx + args.seed)
+    np.random.seed(worker_idx + args.seed)
+    rng = np.random.default_rng(worker_idx + args.seed)
 
-    # Set device before distributed init to avoid "using gpu x to perform barrier" warning
-    if torch.cuda.is_available() and "LOCAL_RANK" in os.environ:
-        torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
-
-    accelerator = Accelerator()
-    device = accelerator.device
-    device_idx = int(accelerator.process_index)
-
-    # Set random seeds
-    torch.manual_seed(device_idx + args.seed)
-    torch.cuda.manual_seed(device_idx + args.seed)
-    np.random.seed(device_idx + args.seed)
-    rng = np.random.default_rng(device_idx + args.seed)
-
-    
-    # load text encoder and vae
     vae = AutoencoderKLFlux2.from_pretrained(
         args.pretrained_model_name_or_path,
-        subfolder="vae",  # Change subfolder if needed
+        subfolder="vae",
         torch_dtype=DATA_TYPES[args.model_dtype],
     ).to(device).eval()
     vae = torch.compile(vae)
 
     text_encoder = Qwen3ForCausalLM.from_pretrained(
-        args.pretrained_model_name_or_path, subfolder="text_encoder",
+        args.pretrained_model_name_or_path,
+        subfolder="text_encoder",
         torch_dtype=DATA_TYPES[args.model_dtype],
     ).to(device).eval()
     text_encoder.requires_grad_(False)
@@ -268,7 +285,6 @@ def main(args: ArgumentParser) -> None:
         subfolder="tokenizer",
     )
 
-    # initialise text encoding pipeline
     text_encoding_pipeline = Flux2KleinPipeline.from_pretrained(
         args.pretrained_model_name_or_path,
         scheduler=None,
@@ -280,13 +296,9 @@ def main(args: ArgumentParser) -> None:
 
     caption_key = "caption"
     image_key = "image"
-    # Ensure RANK/WORLD_SIZE are set for StreamingDataset partitioning (accelerate sets these,
-    # but we ensure they match our process state)
-    if accelerator.num_processes > 1:
-        os.environ["RANK"] = str(accelerator.process_index)
-        os.environ["WORLD_SIZE"] = str(accelerator.num_processes)
+
     dataloader = build_streaming_sstk_t2i_dataloader(
-        datadir=args.datadir,
+        datadir=subfolder_paths,
         batch_size=args.batch_size,
         resize_sizes=args.image_resolutions,
         drop_last=False,
@@ -295,13 +307,6 @@ def main(args: ArgumentParser) -> None:
         caption_key=caption_key,
         clean_caption=True,
     )
-    # Avoid accelerator.prepare(dataloader): StreamingDataset handles distributed via RANK/WORLD_SIZE
-    # env vars. prepare() injects DistributedSampler which conflicts and causes deadlock (see
-    # mosaicml/streaming#307). Only prepare when single-process.
-    if accelerator.num_processes == 1:
-        dataloader = accelerator.prepare(dataloader)
-
-
     ds = dataloader.dataset
     n_samples = getattr(ds, "size", None)
     if n_samples is None:
@@ -310,54 +315,50 @@ def main(args: ArgumentParser) -> None:
         except (TypeError, NotImplementedError):
             n_samples = "?"
     print(
-        f"Device: {device_idx}, world size: {accelerator.num_processes}, "
-        f"dataset samples: {n_samples}, {device}"
+        f"Worker {worker_idx} -> subdirs: {subfolder_paths}, "
+        f"device={device}, samples={n_samples}"
     )
 
-    columns = {'caption': 'str'}
+    columns = {"caption": "str"}
     if args.vae:
         for size in args.image_resolutions:
-            columns[f'latents_{size}'] = 'bytes'
+            columns[f"latents_{size}"] = "bytes"
     if args.text_encoder:
-        columns['text_embeds'] = 'bytes'
-        columns['text_ids'] = 'bytes'
+        columns["text_embeds"] = "bytes"
+        columns["text_ids"] = "bytes"
     if args.save_images:
-        columns["image"] = 'jpeg'
+        columns["image"] = "jpeg"
 
-    remote_upload = os.path.join(args.savedir, str(accelerator.process_index))
+    out_dir = os.path.join(args.savedir, str(worker_idx))
+    os.makedirs(out_dir, exist_ok=True)
     writer = MDSWriter(
-        out=remote_upload,
+        out=out_dir,
         columns=columns,
         compression=None,
         size_limit=256 * (2**20),
         max_workers=64,
     )
 
-
-    for batch in tqdm(dataloader):
-        # Stack images for each resolution
+    for batch in tqdm(dataloader, desc=f"Worker {worker_idx}", position=worker_idx):
         images = [
             torch.stack(batch[f"image_{idx}"]).to(device)
             for idx in range(len(args.image_resolutions))
         ]
-
         batch_size = images[0].shape[0]
 
         try:
             with torch.no_grad():
                 with torch.autocast(device_type="cuda", dtype=DATA_TYPES[args.model_dtype]):
-                    # Encode images with VAE for each resolution
                     latents_dict = {}
                     if args.vae:
                         for idx, size in enumerate(args.image_resolutions):
                             latent_dist = vae.encode(images[idx])
                             assert isinstance(latent_dist, AutoencoderKLOutput)
-                            lat = (
-                                latent_dist.latent_dist.sample()
-                            ).to(DATA_TYPES[args.save_dtype])
+                            lat = latent_dist.latent_dist.sample().to(
+                                DATA_TYPES[args.save_dtype]
+                            )
                             latents_dict[size] = lat.detach().cpu().numpy()
 
-                    # Sample one caption per sample when multiple exist, then encode
                     captions_to_encode = []
                     for i in range(batch_size):
                         c = batch["caption"][i]
@@ -368,10 +369,8 @@ def main(args: ArgumentParser) -> None:
                             c = _sample_caption(c, weights, rng, clean=True)
                         elif isinstance(c, list) and len(c) == 1:
                             c = text_preprocessing(c[0], True)[0]
-                        # else c is already a string
                         captions_to_encode.append(c)
 
-                    # Encode text with text encoder
                     prompt_embeds = None
                     text_ids = None
                     if args.text_encoder:
@@ -380,54 +379,87 @@ def main(args: ArgumentParser) -> None:
                             max_sequence_length=args.max_sequence_length,
                             text_encoder_out_layers=args.text_encoder_out_layers,
                         )
-                        prompt_embeds = prompt_embeds.to(DATA_TYPES[args.save_dtype]).detach().cpu().numpy()
+                        prompt_embeds = (
+                            prompt_embeds.to(DATA_TYPES[args.save_dtype])
+                            .detach()
+                            .cpu()
+                            .numpy()
+                        )
                         text_ids = text_ids.to(torch.int8).detach().cpu().numpy()
 
-            # Write each sample to MDS
-            for i in range(batch_size):
-                mds_sample = {
-                    "caption": captions_to_encode[i],
-                }
-                if args.text_encoder:
-                    mds_sample["text_embeds"] = prompt_embeds[i].tobytes()
-                    mds_sample["text_ids"] = text_ids[i].tobytes()
-                if args.vae:
-                    for size in args.image_resolutions:
-                        mds_sample[f"latents_{size}"] = latents_dict[size][i].tobytes()
-                if args.save_images:
-                    mds_sample["image"] = batch["sample"][i][image_key]
-                writer.write(mds_sample)
+                for i in range(batch_size):
+                    mds_sample = {"caption": captions_to_encode[i]}
+                    if args.text_encoder:
+                        mds_sample["text_embeds"] = prompt_embeds[i].tobytes()
+                        mds_sample["text_ids"] = text_ids[i].tobytes()
+                    if args.vae:
+                        for size in args.image_resolutions:
+                            mds_sample[f"latents_{size}"] = latents_dict[size][
+                                i
+                            ].tobytes()
+                    if args.save_images:
+                        mds_sample["image"] = batch["sample"][i][image_key]
+                    writer.write(mds_sample)
         except RuntimeError as e:
-            print(f"Runtime error CUDA, skipping this batch: {e}")
+            print(f"Worker {worker_idx} runtime error, skipping batch: {e}")
 
     writer.finish()
 
-    # Wait for all processes to finish
-    print(f"Process {accelerator.process_index} finished")
-    accelerator.wait_for_everyone()
-
-    # Free GPU memory and sync before exit to avoid SIGSEGV (exit code 11) during
-    # the launcher's exit barrier. Explicit destroy_process_group can conflict with
-    # torchrun's _exit_barrier and trigger segfaults.
     if torch.cuda.is_available():
         del text_encoding_pipeline, text_encoder, vae
         torch.cuda.synchronize()
         torch.cuda.empty_cache()
 
-    accelerator.wait_for_everyone()
-    if torch.distributed.is_initialized():
-        torch.distributed.destroy_process_group()
-
-    # Merge the mds shards created by each device (only do on main process)
-    if accelerator.is_main_process:
-        shards_metadata = [
-            os.path.join(args.savedir, str(i), "index.json")
-            for i in range(accelerator.num_processes)
-        ]
-        merge_index(shards_metadata, out=args.savedir, keep_local=True)
+    print(f"Worker {worker_idx} finished")
 
 
-    exit(0)
+def _partition_subfolders(subfolders: List[str], num_proc: int) -> List[List[str]]:
+    """Partition subfolders across num_proc workers (contiguous chunks)."""
+    if num_proc >= len(subfolders):
+        return [[s] for s in subfolders] + [[] for _ in range(num_proc - len(subfolders))]
+    chunk_size = (len(subfolders) + num_proc - 1) // num_proc
+    return [
+        subfolders[i * chunk_size : (i + 1) * chunk_size]
+        for i in range(num_proc)
+        if i * chunk_size < len(subfolders)
+    ]
+
+
+def main(args: ArgumentParser) -> None:
+    """Precompute image and text latents and store them in MDS format.
+
+    Uses multiprocessing: each worker gets multiple prepare.py subfolders as streams,
+    processes them in one dataloader, writes to savedir/{worker_idx}. No accelerate.
+    """
+
+    subfolders = _discover_subfolders(args.datadir)
+    num_proc = args.num_proc
+
+    if subfolders:
+        if num_proc is None:
+            num_proc = len(subfolders)
+        num_proc = min(num_proc, len(subfolders))
+    else:
+        num_proc = 1
+        subfolders = [args.datadir]
+
+    partitions = _partition_subfolders(subfolders, num_proc)
+    partitions = [p for p in partitions if p]  # drop empty
+    num_proc = len(partitions)
+
+    os.makedirs(args.savedir, exist_ok=True)
+
+    tasks = [(partitions[i], i, args) for i in range(num_proc)]
+    ctx = get_context("spawn")
+    with ctx.Pool(processes=num_proc) as pool:
+        pool.map(_precompute_worker, tasks)
+
+    shards_metadata = [
+        os.path.join(args.savedir, str(i), "index.json")
+        for i in range(num_proc)
+    ]
+    merge_index(shards_metadata, out=args.savedir, keep_local=True)
+    print("Merged all shards into", args.savedir)
 
 
 if __name__ == "__main__":
