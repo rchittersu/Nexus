@@ -62,6 +62,37 @@ class TestParseArgs:
             assert args.text_encoder is True
             assert args.text_encoder_out_layers == [9, 18, 27]
             assert args.max_sequence_length == 128
+            assert args.dataloader_workers == 2
+            assert args.worker_idx is None
+            assert args.subfolder_paths is None
+
+    def test_dataloader_workers_parsed(self):
+        """--dataloader_workers is parsed correctly."""
+        with patch.object(sys, 'argv', [
+            'precompute.py', '--datadir', '/data',
+            '--dataloader_workers', '8',
+        ]):
+            args = parse_args()
+            assert args.dataloader_workers == 8
+
+    def test_args_file_loads_args(self, tmp_path):
+        """--args_file loads full args from JSON (worker subprocess mode)."""
+        args_data = {
+            "datadir": "/data",
+            "savedir": "/out",
+            "num_proc": 4,
+            "worker_idx": 2,
+            "subfolder_paths": ["/data/0", "/data/1"],
+        }
+        args_file = tmp_path / "args.json"
+        with open(args_file, "w") as f:
+            json.dump(args_data, f)
+        with patch.object(sys, 'argv', ['precompute.py', '--args_file', str(args_file)]):
+            args = parse_args()
+            assert args.datadir == "/data"
+            assert args.savedir == "/out"
+            assert args.worker_idx == 2
+            assert args.subfolder_paths == ["/data/0", "/data/1"]
 
     def test_all_arguments_override_defaults(self):
         """All optional arguments override defaults when provided."""

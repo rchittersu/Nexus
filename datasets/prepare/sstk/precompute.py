@@ -1,6 +1,9 @@
+import json
 import os
-from argparse import ArgumentParser
-from multiprocessing import get_context
+import subprocess
+import sys
+import tempfile
+from argparse import ArgumentParser, Namespace
 from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
@@ -31,6 +34,7 @@ def build_streaming_sstk_t2i_dataloader(
     resize_sizes: Optional[List[int]] = None,
     drop_last: bool = False,
     shuffle: bool = True,
+    num_workers: int = 0,
     image_key: str = 'image',
     caption_key: str = 'caption',
     clean_caption: bool = True,
@@ -70,13 +74,13 @@ def build_streaming_sstk_t2i_dataloader(
                 out[key].append(value)
         return out
 
-    # num_workers=0: StreamingDataset + multiprocessing workers can deadlock
+    # num_workers: safe to use >0 when workers are launched via subprocess (not multiprocessing.Pool)
     dataloader = DataLoader(
         dataset=dataset,
         batch_size=batch_size,
         drop_last=drop_last,
         collate_fn=custom_collate,
-        num_workers=2,
+        num_workers=num_workers,
     )
 
     return dataloader
@@ -118,14 +122,16 @@ def _discover_subfolders(datadir: str) -> List[str]:
 
 
 """Example usage:
-# Multi-process: each worker gets multiple prepare.py subfolders as streams (no accelerate):
+# Workers launched via subprocess (so DataLoader num_workers>0 is safe):
 python precompute.py \
     --datadir ./sa1b/mds/ \
     --savedir ./sa1b/mds_latents_flux2/ \
     --num_proc 8 \
+    --dataloader_workers 4 \
     --pretrained_model_name_or_path <path_to_pretrained_model> \
     --batch_size 32
 # With 16 prepare subfolders and --num_proc 8: each worker processes 2 subfolders as streams.
+# --dataloader_workers controls DataLoader parallelism per worker (default: 2).
 """
 
 
@@ -241,7 +247,38 @@ def parse_args() -> ArgumentParser:
         help="Weights for sampling among multiple captions by index (e.g. 0.5,0.3,0.2). "
         "If fewer weights than captions, remaining indices get equal weight. Default: uniform.",
     )
+    parser.add_argument(
+        "--dataloader_workers",
+        type=int,
+        default=2,
+        help="DataLoader num_workers per subprocess. Safe to use >0 because workers are "
+        "launched via subprocess (not multiprocessing.Pool). Default: 2.",
+    )
+    parser.add_argument(
+        "--worker_idx",
+        type=int,
+        default=None,
+        help="[Internal] Worker index when run as subprocess. Do not set manually.",
+    )
+    parser.add_argument(
+        "--subfolder_paths",
+        type=str,
+        default=None,
+        help="[Internal] Comma-separated subfolder paths for this worker. Do not set manually.",
+    )
+    parser.add_argument(
+        "--args_file",
+        type=str,
+        default=None,
+        help="[Internal] Path to JSON file with full args (used when launching worker subprocess).",
+    )
     args = parser.parse_args()
+
+    # Worker mode: load args from file (avoids CLI serialization of complex types)
+    if args.args_file is not None:
+        with open(args.args_file) as f:
+            data = json.load(f)
+        args = Namespace(**data)
     if isinstance(args.image_resolutions, int):
         args.image_resolutions = [args.image_resolutions]
     return args
@@ -294,6 +331,7 @@ def _precompute_worker(task: Tuple[List[str], int, object]) -> None:
         resize_sizes=args.image_resolutions,
         drop_last=False,
         shuffle=False,
+        num_workers=args.dataloader_workers,
         image_key=image_key,
         caption_key=caption_key,
         clean_caption=True,
@@ -419,9 +457,20 @@ def _partition_subfolders(subfolders: List[str], num_proc: int) -> List[List[str
 def main(args: ArgumentParser) -> None:
     """Precompute image and text latents and store them in MDS format.
 
-    Uses multiprocessing: each worker gets multiple prepare.py subfolders as streams,
-    processes them in one dataloader, writes to savedir/{worker_idx}. No accelerate.
+    Launches workers via subprocess (not multiprocessing.Pool) so each can use
+    DataLoader with num_workers>0. Each worker gets multiple prepare.py subfolders
+    as streams, processes them, writes to savedir/{worker_idx}.
     """
+
+    # Worker mode: run single worker and exit
+    if args.worker_idx is not None and args.subfolder_paths is not None:
+        paths = (
+            args.subfolder_paths
+            if isinstance(args.subfolder_paths, list)
+            else [p.strip() for p in args.subfolder_paths.split(",") if p.strip()]
+        )
+        _precompute_worker((paths, args.worker_idx, args))
+        return
 
     subfolders = _discover_subfolders(args.datadir)
     num_proc = args.num_proc
@@ -440,10 +489,32 @@ def main(args: ArgumentParser) -> None:
 
     os.makedirs(args.savedir, exist_ok=True)
 
-    tasks = [(partitions[i], i, args) for i in range(num_proc)]
-    ctx = get_context("spawn")
-    with ctx.Pool(processes=num_proc) as pool:
-        pool.map(_precompute_worker, tasks)
+    # Launch workers as subprocesses (not multiprocessing.Pool) so each can use
+    # DataLoader with num_workers>0 without nested-process issues.
+    procs = []
+    script = os.path.abspath(__file__)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        for i in range(num_proc):
+            data = {
+                k: v
+                for k, v in vars(args).items()
+                if k not in ("args_file", "worker_idx", "subfolder_paths")
+            }
+            data["worker_idx"] = i
+            data["subfolder_paths"] = partitions[i]
+            args_path = os.path.join(tmpdir, f"args_{i}.json")
+            with open(args_path, "w") as f:
+                json.dump(data, f)
+            proc = subprocess.Popen(
+                [sys.executable, script, "--args_file", args_path],
+                stdout=sys.stdout,
+                stderr=sys.stderr,
+            )
+            procs.append(proc)
+        for proc in procs:
+            proc.wait()
+            if proc.returncode != 0:
+                raise SystemExit(proc.returncode)
 
     shards_metadata = [
         os.path.join(args.savedir, str(i), "index.json")

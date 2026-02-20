@@ -30,9 +30,8 @@ run_prepare() {
 
 run_precompute() {
     echo "=== Running precompute ==="
-    # Uses plain python + multiprocessing (no accelerate). Each worker processes
-    # one prepare.py subfolder (0, 1, 2, ...) independently. num_proc should match
-    # prepare --num_proc or be omitted to auto-detect from subfolders.
+    # Workers launched via subprocess (not multiprocessing.Pool), so dataloader_workers>0
+    # is safe. num_proc should match prepare --num_proc or be omitted to auto-detect.
     python "$SCRIPT_DIR/precompute.py" \
         --datadir "${MDS_DIR}/" \
         --savedir "${LATENTS_DIR}/" \
@@ -42,7 +41,8 @@ run_precompute() {
         --batch_size 32 \
         --seed 42 \
         --model_dtype bfloat16 \
-        --save_dtype float16
+        --save_dtype float16 \
+        --dataloader_workers 4
 }
 
 case "${1:-all}" in
