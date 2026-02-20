@@ -230,7 +230,7 @@ def parse_args() -> ArgumentParser:
     parser.add_argument(
         "--max_sequence_length",
         type=int,
-        default=512,
+        default=128,
         help="Maximum sequence length for text encoding.",
     )
     parser.add_argument(
@@ -285,15 +285,6 @@ def _precompute_worker(task: Tuple[List[str], int, object]) -> None:
         subfolder="tokenizer",
     )
 
-    text_encoding_pipeline = Flux2KleinPipeline.from_pretrained(
-        args.pretrained_model_name_or_path,
-        scheduler=None,
-        vae=None,
-        transformer=None,
-        tokenizer=tokenizer,
-        text_encoder=text_encoder,
-    )
-
     caption_key = "caption"
     image_key = "image"
 
@@ -325,7 +316,6 @@ def _precompute_worker(task: Tuple[List[str], int, object]) -> None:
             columns[f"latents_{size}"] = "bytes"
     if args.text_encoder:
         columns["text_embeds"] = "bytes"
-        columns["text_ids"] = "bytes"
     if args.save_images:
         columns["image"] = "jpeg"
 
@@ -372,12 +362,15 @@ def _precompute_worker(task: Tuple[List[str], int, object]) -> None:
                         captions_to_encode.append(c)
 
                     prompt_embeds = None
-                    text_ids = None
                     if args.text_encoder:
-                        prompt_embeds, text_ids = text_encoding_pipeline.encode_prompt(
+                        prompt_embeds = Flux2KleinPipeline._get_qwen3_prompt_embeds(
+                            text_encoder=text_encoder,
+                            tokenizer=tokenizer,
                             prompt=captions_to_encode,
+                            device=device,
+                            dtype=DATA_TYPES[args.model_dtype],
                             max_sequence_length=args.max_sequence_length,
-                            text_encoder_out_layers=args.text_encoder_out_layers,
+                            hidden_states_layers=tuple(args.text_encoder_out_layers),
                         )
                         prompt_embeds = (
                             prompt_embeds.to(DATA_TYPES[args.save_dtype])
@@ -385,13 +378,11 @@ def _precompute_worker(task: Tuple[List[str], int, object]) -> None:
                             .cpu()
                             .numpy()
                         )
-                        text_ids = text_ids.to(torch.int8).detach().cpu().numpy()
 
                 for i in range(batch_size):
                     mds_sample = {"caption": captions_to_encode[i]}
                     if args.text_encoder:
                         mds_sample["text_embeds"] = prompt_embeds[i].tobytes()
-                        mds_sample["text_ids"] = text_ids[i].tobytes()
                     if args.vae:
                         for size in args.image_resolutions:
                             mds_sample[f"latents_{size}"] = latents_dict[size][
@@ -406,7 +397,7 @@ def _precompute_worker(task: Tuple[List[str], int, object]) -> None:
     writer.finish()
 
     if torch.cuda.is_available():
-        del text_encoding_pipeline, text_encoder, vae
+        del text_encoder, vae
         torch.cuda.synchronize()
         torch.cuda.empty_cache()
 

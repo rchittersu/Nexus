@@ -37,7 +37,7 @@ run_precompute() {
         --datadir "${MDS_DIR}/" \
         --savedir "${LATENTS_DIR}/" \
         --num_proc 16 \
-        --image_resolutions 512 1024 \
+        --image_resolutions 512 \
         --pretrained_model_name_or_path black-forest-labs/FLUX.2-klein-base-4B \
         --batch_size 32 \
         --seed 42 \

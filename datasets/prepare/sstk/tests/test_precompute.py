@@ -61,7 +61,7 @@ class TestParseArgs:
             assert args.vae is True
             assert args.text_encoder is True
             assert args.text_encoder_out_layers == [9, 18, 27]
-            assert args.max_sequence_length == 512
+            assert args.max_sequence_length == 128
 
     def test_all_arguments_override_defaults(self):
         """All optional arguments override defaults when provided."""
@@ -280,7 +280,6 @@ class TestColumnsBuilding:
                 columns[f'latents_{size}'] = 'bytes'
         if args.text_encoder:
             columns['text_embeds'] = 'bytes'
-            columns['text_ids'] = 'bytes'
         if args.save_images:
             columns['image'] = 'jpeg'
 
@@ -289,7 +288,6 @@ class TestColumnsBuilding:
             'latents_512': 'bytes',
             'latents_1024': 'bytes',
             'text_embeds': 'bytes',
-            'text_ids': 'bytes',
         }
 
     def test_columns_no_vae(self):
@@ -306,7 +304,6 @@ class TestColumnsBuilding:
                 columns[f'latents_{size}'] = 'bytes'
         if args.text_encoder:
             columns['text_embeds'] = 'bytes'
-            columns['text_ids'] = 'bytes'
         if args.save_images:
             columns['image'] = 'jpeg'
 
@@ -327,7 +324,6 @@ class TestColumnsBuilding:
                 columns[f'latents_{size}'] = 'bytes'
         if args.text_encoder:
             columns['text_embeds'] = 'bytes'
-            columns['text_ids'] = 'bytes'
         if args.save_images:
             columns['image'] = 'jpeg'
 
@@ -448,11 +444,11 @@ class TestPrecomputeIntegration:
             text_embeds_bytes = sample['text_embeds']
             latent_bytes = sample['latents_512']
 
-            # Re-encode caption (must match precompute default [9, 18, 27])
+            # Re-encode caption (must match precompute default [9, 18, 27], max_sequence_length 128)
             with torch.no_grad():
                 re_embeds, _ = pipeline.encode_prompt(
                     prompt=[caption],
-                    max_sequence_length=512,
+                    max_sequence_length=128,
                     text_encoder_out_layers=[9, 18, 27],
                 )
             re_embeds_np = re_embeds.cpu().float().numpy()
