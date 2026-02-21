@@ -5,6 +5,9 @@ Produced by datasets/precompute.py. Schema: caption, latents_{resolution},
 text_embeds. Single resolution (default 512). text_ids generated from text_embeds
 via Flux2KleinPipeline._prepare_text_ids. Enables training without running VAE
 or text encoder during training.
+
+For img2img MDS (from precompute --mode img2img): when source_latents_{resolution}
+exists, optionally returns source_latents (raw, same format as target).
 """
 
 import numpy as np
@@ -70,6 +73,7 @@ class PrecomputedSSTKDataset(StreamingDataset):
         self.text_embed_hidden = text_embed_hidden
         self.latent_dtype = latent_dtype
         self.latent_key = f"latents_{resolution}"
+        self.source_latent_key = f"source_latents_{resolution}"
 
     def __getitem__(self, index: int) -> dict:
         sample = super().__getitem__(index)
@@ -95,19 +99,31 @@ class PrecomputedSSTKDataset(StreamingDataset):
         text_ids = Flux2KleinPipeline._prepare_text_ids(text_embeds_batched)
         text_ids = text_ids.squeeze(0)
 
-        return {
+        out = {
             "latents": latents,
             "text_embeds": text_embeds,
             "text_ids": text_ids,
             "caption": sample.get("caption", ""),
         }
+        if self.source_latent_key in sample:
+            source_latents = _bytes_to_latent(
+                sample[self.source_latent_key],
+                self.resolution,
+                self.latent_channels,
+                self.latent_dtype,
+            )
+            out["source_latents"] = source_latents
+        return out
 
 
 def collate_precomputed(batch: list[dict]) -> dict:
-    """Collate precomputed batch for training."""
-    return {
+    """Collate precomputed batch for training. Adds source_latents when present (img2img)."""
+    out = {
         "latents": torch.stack([b["latents"] for b in batch]),
         "text_embeds": torch.stack([b["text_embeds"] for b in batch]),
         "text_ids": torch.stack([b["text_ids"] for b in batch]),
         "captions": [b["caption"] for b in batch],
     }
+    if batch and "source_latents" in batch[0]:
+        out["source_latents"] = torch.stack([b["source_latents"] for b in batch])
+    return out

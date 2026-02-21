@@ -56,7 +56,7 @@ max_grad_norm: 1.0
 
 validation:
   steps: 500
-  prompt: null
+  entries: []  # [{prompt: "...", source: null, num_images: 2}, ...]
   seed: 42
 
 checkpointing_steps: 500

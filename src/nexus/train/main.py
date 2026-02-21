@@ -39,6 +39,7 @@ from nexus.utils.checkpoint_utils import (
     prune_old_checkpoints,
     save_final_klein,
 )
+from nexus.utils.config_utils import check_prior_preservation_config
 from nexus.utils.log_utils import init_trackers, log_dataset_input, setup_tracking
 from nexus.utils.train_utils import unwrap_model
 
@@ -344,6 +345,7 @@ def main(args=None):
     # --- Loss & validation ---
     loss_cfg = cfg.loss
     loss_fn = build_loss_fn(cfg, model_cfg=model_cfg, accelerator=accelerator, weight_dtype=weight_dtype)
+    check_prior_preservation_config(cfg)
 
     if accelerator.is_main_process:
         logger.info("***** Running training *****")
@@ -378,12 +380,16 @@ def main(args=None):
 
     for _epoch in range(first_epoch, num_epochs):
         transformer.train()
-        for _step, batch in enumerate(train_dataloader):
+        for _step, raw_batch in enumerate(train_dataloader):
             batch = {
-                "latents": batch["latents"].to(accelerator.device, dtype=weight_dtype),
-                "text_embeds": batch["text_embeds"].to(accelerator.device, dtype=weight_dtype),
-                "text_ids": batch["text_ids"].to(accelerator.device),
+                "latents": raw_batch["latents"].to(accelerator.device, dtype=weight_dtype),
+                "text_embeds": raw_batch["text_embeds"].to(accelerator.device, dtype=weight_dtype),
+                "text_ids": raw_batch["text_ids"].to(accelerator.device),
             }
+            if "source_latents" in raw_batch:
+                batch["source_latents"] = raw_batch["source_latents"].to(
+                    accelerator.device, dtype=weight_dtype
+                )
 
             with accelerator.accumulate([transformer]):
                 loss, loss_breakdown = training_step_precomputed(
@@ -425,26 +431,28 @@ def main(args=None):
 
                 # Periodic validation: generate images and log to trackers
                 val_cfg = getattr(cfg, "validation", None)
+                has_val_prompt = val_cfg and getattr(val_cfg, "prompt", None)
+                has_val_entries = val_cfg and getattr(val_cfg, "entries", None)
                 if (
                     accelerator.is_main_process
                     and val_cfg
-                    and getattr(val_cfg, "prompt", None)
+                    and (has_val_prompt or has_val_entries)
                     and global_step % getattr(val_cfg, "steps", 500) == 0
                 ):
                     run_validation(
                         pipeline_cls=pipeline_cfg._class,
                         transformer=unwrap_model(accelerator, transformer),
-                        validation_prompt=val_cfg.prompt,
                         accelerator=accelerator,
                         step=global_step,
                         output_dir=cfg.output_dir,
-                        num_images=getattr(val_cfg, "num_images", 4),
-                        seed=getattr(val_cfg, "seed", 42),
                         resolution=getattr(val_cfg, "resolution", 512),
                         weight_dtype=weight_dtype,
                         pretrained_path=pretrained_path,
                         inference_steps=getattr(val_cfg, "inference_steps", 4),
                         guidance_scale=getattr(val_cfg, "guidance_scale", 1.0),
+                        seed=getattr(val_cfg, "seed", 42),
+                        validation_prompt=getattr(val_cfg, "prompt", None),
+                        validation_entries=getattr(val_cfg, "entries", None),
                     )
 
                 if (

@@ -60,7 +60,10 @@ max_grad_norm: 1.0
 
 validation:
   steps: 100
-  prompt: "A photo of sks dog in a bucket"
+  entries:
+    - prompt: "A photo of sks dog in a bucket"
+      source: null
+      num_images: 2
   resolution: 512
   seed: 42
 

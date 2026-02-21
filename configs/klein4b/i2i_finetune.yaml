@@ -1,4 +1,4 @@
-# Klein 4B base t2i fine-tune — SSTK training. latent_channels, text_embed_hidden from base.
+# Klein 4B img2img fine-tune. Same base as t2i; uses precomputed MDS with source_latents.
 extends: base.yaml
 
 dataset:
@@ -56,7 +56,7 @@ max_grad_norm: 1.0
 
 validation:
   steps: 500
-  entries: []  # [{prompt: "...", source: null, num_images: 2}, ...]
+  entries: []  # [{prompt: "...", source: "path.png", num_images: 1}, ...]
   seed: 42
 
 checkpointing_steps: 500
@@ -66,6 +66,6 @@ seed: null
 allow_tf32: false
 
 mlflow:
-  experiment_name: klein4b-base-t2i-finetune
+  experiment_name: klein4b-i2i-finetune
   run_name: batch4-lora4
   user: null

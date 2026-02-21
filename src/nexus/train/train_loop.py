@@ -58,6 +58,7 @@ def training_step_precomputed(
     latents = batch["latents"]
     text_embeds = batch["text_embeds"]
     text_ids = batch["text_ids"]
+    source_latents = batch.get("source_latents")
 
     model_input = Flux2KleinPipeline._patchify_latents(latents)
     model_input = (model_input - latents_bn_mean) / latents_bn_std
@@ -87,6 +88,18 @@ def training_step_precomputed(
     noisy_model_input = (1.0 - sigmas) * model_input + sigmas * noise
 
     packed_noisy = Flux2KleinPipeline._pack_latents(noisy_model_input)
+    orig_seq_len = packed_noisy.size(1)
+    target_model_input_ids = model_input_ids
+
+    if source_latents is not None:
+        source_model_input = Flux2KleinPipeline._patchify_latents(source_latents)
+        source_model_input = (source_model_input - latents_bn_mean) / latents_bn_std
+        source_model_input_ids = Flux2KleinPipeline._prepare_latent_ids(
+            source_model_input
+        ).to(device=model_input.device)
+        packed_source = Flux2KleinPipeline._pack_latents(source_model_input)
+        packed_noisy = torch.cat([packed_noisy, packed_source], dim=1)
+        model_input_ids = torch.cat([model_input_ids, source_model_input_ids], dim=1)
 
     guidance = (
         torch.full([1], guidance_scale, device=accelerator.device).expand(bsz)
@@ -103,8 +116,10 @@ def training_step_precomputed(
         img_ids=model_input_ids,
         return_dict=False,
     )[0]
-    model_pred = model_pred[:, : packed_noisy.size(1) :]
-    model_pred = Flux2KleinPipeline._unpack_latents_with_ids(model_pred, model_input_ids)
+    model_pred = model_pred[:, :orig_seq_len, :]
+    model_pred = Flux2KleinPipeline._unpack_latents_with_ids(
+        model_pred, target_model_input_ids
+    )
 
     weighting = compute_loss_weighting_for_sd3(weighting_scheme=weighting_scheme, sigmas=sigmas)
 
@@ -115,7 +130,7 @@ def training_step_precomputed(
         model_input=model_input,
         weighting=weighting,
         packed_noisy=packed_noisy,
-        model_input_ids=model_input_ids,
+        model_input_ids=target_model_input_ids,
         timesteps=timesteps,
         sigmas=sigmas,
         guidance=guidance,

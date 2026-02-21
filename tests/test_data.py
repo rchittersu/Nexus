@@ -43,3 +43,44 @@ class TestCollatePrecomputed:
         out = collate_precomputed(batch)
         assert out["latents"].shape == (1, 32, 64, 64)
         assert len(out["captions"]) == 1
+
+
+class TestCollatePrecomputedWithSource:
+    """collate_precomputed stacks source_latents when present (img2img)."""
+
+    def test_collate_with_source(self):
+        batch = [
+            {
+                "latents": torch.randn(32, 64, 64),
+                "source_latents": torch.randn(32, 64, 64),
+                "text_embeds": torch.randn(512, 7680),
+                "text_ids": torch.zeros(512, 4, dtype=torch.int64),
+                "caption": "cap1",
+            },
+            {
+                "latents": torch.randn(32, 64, 64),
+                "source_latents": torch.randn(32, 64, 64),
+                "text_embeds": torch.randn(512, 7680),
+                "text_ids": torch.zeros(512, 4, dtype=torch.int64),
+                "caption": "cap2",
+            },
+        ]
+        out = collate_precomputed(batch)
+        assert out["latents"].shape == (2, 32, 64, 64)
+        assert out["source_latents"].shape == (2, 32, 64, 64)
+        assert out["text_embeds"].shape == (2, 512, 7680)
+        assert out["captions"] == ["cap1", "cap2"]
+
+    def test_collate_without_source(self):
+        """When no source_latents (t2i), output has no source_latents key."""
+        batch = [
+            {
+                "latents": torch.randn(32, 64, 64),
+                "text_embeds": torch.randn(512, 7680),
+                "text_ids": torch.zeros(512, 4, dtype=torch.int64),
+                "caption": "cap1",
+            },
+        ]
+        out = collate_precomputed(batch)
+        assert out["latents"].shape == (1, 32, 64, 64)
+        assert "source_latents" not in out
