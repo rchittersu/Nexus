@@ -109,6 +109,12 @@ def load_config(path: str | Path) -> SimpleNamespace:
     if hasattr(cfg, "loss") and hasattr(cfg.loss, "class_name"):
         cfg.loss._class = _resolve_class(cfg.loss.class_name)
 
+    # Inject latent_channels and text_embed_hidden from base into dataset.kwargs
+    if hasattr(cfg, "dataset") and hasattr(cfg.dataset, "kwargs"):
+        for key in ("latent_channels", "text_embed_hidden"):
+            if hasattr(cfg, key) and not hasattr(cfg.dataset.kwargs, key):
+                setattr(cfg.dataset.kwargs, key, getattr(cfg, key))
+
     return cfg
 
 
