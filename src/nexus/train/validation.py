@@ -35,6 +35,7 @@ def run_validation(
     step: int,
     num_images: int = 4,
     seed: int | None = 42,
+    resolution: int = 512,
     weight_dtype: torch.dtype = torch.float16,
     pretrained_path: str | None = None,
     revision: str | None = None,
@@ -62,7 +63,12 @@ def run_validation(
     images = []
     for _ in range(num_images):
         with torch.autocast(device_type=accelerator.device.type, dtype=weight_dtype):
-            out = pipeline(prompt=validation_prompt, generator=generator)
+            out = pipeline(
+                prompt=validation_prompt,
+                height=resolution,
+                width=resolution,
+                generator=generator,
+            )
         images.append(out.images[0])
 
     for tracker in accelerator.trackers:

@@ -437,6 +437,7 @@ def main(args=None):
                         step=global_step,
                         num_images=getattr(val_cfg, "num_images", 4),
                         seed=getattr(val_cfg, "seed", 42),
+                        resolution=getattr(val_cfg, "resolution", 512),
                         weight_dtype=weight_dtype,
                         pretrained_path=pretrained_path,
                         revision=model_cfg.revision,
