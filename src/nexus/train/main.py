@@ -347,6 +347,23 @@ def main(args=None):
     loss_fn = build_loss_fn(cfg, model_cfg=model_cfg, accelerator=accelerator, weight_dtype=weight_dtype)
     check_prior_preservation_config(cfg)
 
+    # --- Optional prompt dropout (null text embed) ---
+    drop_text_prob = getattr(train_cfg, "drop_text_prob", 0.0)
+    null_text_embed_path = getattr(train_cfg, "null_text_embed_path", None)
+    if drop_text_prob > 0:
+        if not null_text_embed_path:
+            raise ValueError(
+                "null_text_embed_path must be set in config when drop_text_prob > 0. "
+                "Use the empty_string_text_embed notebook to create the .pt file."
+            )
+        null_text_embeds = torch.load(
+            null_text_embed_path, map_location="cpu", weights_only=True
+        )
+        if null_text_embeds.dim() == 2:
+            null_text_embeds = null_text_embeds.unsqueeze(0)
+    else:
+        null_text_embeds = None
+
     if accelerator.is_main_process:
         logger.info("***** Running training *****")
         logger.info("  Data = %s", ds_kwargs.get("local"))
@@ -390,6 +407,18 @@ def main(args=None):
                 batch["source_latents"] = raw_batch["source_latents"].to(
                     accelerator.device, dtype=weight_dtype
                 )
+
+            # Optionally drop prompt (replace with null embed) per sample; text_ids unchanged
+            if drop_text_prob > 0 and null_text_embeds is not None:
+                B = batch["text_embeds"].shape[0]
+                drop_mask = torch.rand(B, device=accelerator.device) < drop_text_prob
+                if drop_mask.any():
+                    null_emb = null_text_embeds.to(
+                        accelerator.device, dtype=weight_dtype
+                    ).expand(B, -1, -1)
+                    batch["text_embeds"] = torch.where(
+                        drop_mask.view(B, 1, 1), null_emb, batch["text_embeds"]
+                    )
 
             with accelerator.accumulate([transformer]):
                 loss, loss_breakdown = training_step_precomputed(

@@ -12,6 +12,10 @@ pipeline:
 latent_channels: 32
 text_embed_hidden: 7680  # 2560*3 for Flux.2 Klein
 
+train:
+  drop_text_prob: 0.0
+  null_text_embed_path: null  # path to .pt of empty-string prompt_embeds; required if drop_text_prob > 0
+
 validation:
   inference_steps: 4
   guidance_scale: 1.0
