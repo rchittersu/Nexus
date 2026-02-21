@@ -1,8 +1,7 @@
 """
-Shared utilities for dataset preparation scripts.
+MDS prepare utilities for datasets/prepare scripts.
 
-Common MDS schema and helpers for prepare.py scripts that output
-(width, height, image, caption) MDS shards compatible with precompute.py.
+Common schema and helpers for prepare output compatible with precompute.py.
 """
 
 import os
@@ -15,7 +14,7 @@ from streaming import MDSWriter
 from streaming.base.util import merge_index
 from tqdm import tqdm
 
-# MDS schema shared by all prepare scripts; precompute.py expects these columns.
+# MDS schema; precompute.py expects these columns.
 MDS_T2I_COLUMNS = {
     "width": "int32",
     "height": "int32",

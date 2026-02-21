@@ -11,20 +11,15 @@ Example:
 
 import json
 import os
-import sys
 from argparse import ArgumentParser
 from multiprocessing import Pool, current_process
 
 import numpy as np
 from PIL import Image
+from streaming import MDSWriter
 from tqdm import tqdm
 
-# Add datasets/ to path for utils import when run as script
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-
-from streaming import MDSWriter
-
-from datasets.utils import MDS_T2I_COLUMNS, merge_mds_shards
+from nexus.utils.mds_utils import MDS_T2I_COLUMNS, merge_mds_shards
 
 
 def parse_arguments() -> ArgumentParser:

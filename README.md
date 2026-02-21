@@ -110,9 +110,8 @@ Nexus/
 │   │   ├── precomputed_sstk.py  # MDS dataset
 │   │   ├── t2i_dataset.py       # Streaming T2I (used by precompute)
 │   │   └── utils.py            # Text preprocessing for captions
-│   └── utils/              # Device/dtype helpers
+│   └── utils/              # Device/dtype, MDS prepare helpers
 └── datasets/               # Data prep scripts
-    ├── utils.py            # Shared MDS helpers for prepare
     ├── precompute.py       # MDS → latents + embeddings (any prepare output)
     ├── prepare/sstk/       # SSTK: images_txt + captions → MDS
     │   ├── prepare.py

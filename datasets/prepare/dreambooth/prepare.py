@@ -27,14 +27,11 @@ from pathlib import Path
 
 import numpy as np
 
-# Add datasets/ to path for utils import when run as script
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-
-from datasets.utils import (
+from nexus.utils.mds_utils import (
     IMAGE_SUFFIXES,
-    write_path_caption_shard,
-    merge_mds_shards,
     collect_images_from_dir,
+    merge_mds_shards,
+    write_path_caption_shard,
 )
 from nexus.utils import DATA_TYPES
 
@@ -318,7 +315,7 @@ def main() -> None:
         raise ValueError("--class_prompt is required when --generate_class_images")
 
     _generate_class_images(args)
-
+ 
     instance_items = _collect_instance_items(args)
     class_items = _collect_class_items(args)
     if not instance_items:
