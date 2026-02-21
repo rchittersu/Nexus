@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from prepare import (
     _collect_class_items,
     _collect_instance_items,
+    _count_class_images,
     main,
     parse_arguments,
 )
@@ -34,6 +35,25 @@ class TestParseArguments:
             args = parse_arguments()
             assert args.instance_prompt == "a photo of sks dog"
             assert args.class_prompt == "a dog"
+
+    def test_generate_class_images_defaults(self):
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "prepare.py",
+                "--instance_data_dir",
+                "/dog",
+                "--local_mds_dir",
+                "/out",
+                "--generate_class_images",
+            ],
+        ):
+            args = parse_arguments()
+            assert args.num_class_images == 100
+            assert args.sample_batch_size == 1
+            assert args.class_image_resolution == 512
+            assert args.pretrained_model_name_or_path == "black-forest-labs/FLUX.2-klein-base-4B"
 
 
 class TestCollectInstanceItems:
@@ -65,6 +85,17 @@ class TestCollectInstanceItems:
             _collect_instance_items(Args())
 
 
+class TestCountClassImages:
+    def test_zero_when_dir_not_exists(self, tmp_path):
+        assert _count_class_images(tmp_path / "nonexistent") == 0
+
+    def test_counts_images(self, tmp_path):
+        (tmp_path / "a.jpg").touch()
+        (tmp_path / "b.png").touch()
+        (tmp_path / "c.txt").touch()
+        assert _count_class_images(tmp_path) == 2
+
+
 class TestCollectClassItems:
     def test_empty_when_no_class_dir(self):
         class Args:
@@ -83,6 +114,32 @@ class TestCollectClassItems:
         items = _collect_class_items(Args())
         assert len(items) == 1
         assert items[0][1] == "a dog"
+
+
+class TestGenerateClassImagesRequirement:
+    def test_requires_class_prompt_when_generate_empty(self, tmp_path):
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        Image.new("RGB", (512, 512), color=(0, 0, 0)).save(instance_dir / "img.png")
+        mds_dir = tmp_path / "mds"
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "prepare.py",
+                "--instance_data_dir",
+                str(instance_dir),
+                "--local_mds_dir",
+                str(mds_dir),
+                "--generate_class_images",
+                "--class_prompt",
+                "",
+                "--min_size",
+                "0",
+            ],
+        ):
+            with pytest.raises(ValueError, match="class_prompt"):
+                main()
 
 
 class TestIntegrationPrepareAndStreamingDataset:
@@ -113,11 +170,13 @@ class TestIntegrationPrepareAndStreamingDataset:
             main()
 
         assert mds_dir.exists()
-        assert (mds_dir / "0").exists()
-        assert (mds_dir / "index.json").exists()
+        instance_mds = mds_dir / "instance"
+        assert instance_mds.exists()
+        assert (instance_mds / "0").exists()
+        assert (instance_mds / "index.json").exists()
 
         ds = StreamingDataset(
-            local=str(mds_dir),
+            local=str(instance_mds),
             batch_size=1,
             shuffle=False,
         )

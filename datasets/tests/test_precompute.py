@@ -24,8 +24,8 @@ from precompute import (
     parse_args,
     _caption_sample_weights,
     _datadir_to_streams,
-    _discover_subfolders,
-    _partition_subfolders,
+    discover_groups,
+    _partition,
     _sample_caption,
 )
 
@@ -65,25 +65,43 @@ class TestDatadirToStreams:
         assert all(isinstance(s, Stream) for s in streams)
 
 
-class TestDiscoverSubfolders:
-    def test_empty_when_not_dir(self, tmp_path):
+class TestDiscoverGroups:
+    def test_raises_when_not_dir(self, tmp_path):
         p = tmp_path / "nonexistent"
-        assert _discover_subfolders(str(p)) == []
+        with pytest.raises(ValueError, match="does not exist"):
+            discover_groups(str(p), "/out")
 
-    def test_finds_digit_subfolders(self, tmp_path):
+    def test_raises_when_no_shards(self, tmp_path):
+        (tmp_path / "meta").mkdir()
+        with pytest.raises(ValueError, match="No MDS shards"):
+            discover_groups(str(tmp_path), "/out")
+
+    def test_flat_layout(self, tmp_path):
         (tmp_path / "0").mkdir()
         (tmp_path / "1").mkdir()
         (tmp_path / "meta").mkdir()
-        result = _discover_subfolders(str(tmp_path))
-        assert len(result) == 2
-        assert any("0" in r for r in result)
-        assert any("1" in r for r in result)
+        groups = discover_groups(str(tmp_path), "/out")
+        assert len(groups) == 1
+        outdir, shards = groups[0]
+        assert outdir == "/out"
+        assert len(shards) == 2
+        assert any("0" in s for s in shards)
+        assert any("1" in s for s in shards)
+
+    def test_nested_layout(self, tmp_path):
+        (tmp_path / "a" / "0").mkdir(parents=True)
+        (tmp_path / "a" / "1").mkdir()
+        (tmp_path / "b" / "0").mkdir(parents=True)
+        groups = discover_groups(str(tmp_path), "/out")
+        assert len(groups) == 2
+        outdirs = {g[0] for g in groups}
+        assert outdirs == {"/out/a", "/out/b"}
 
 
-class TestPartitionSubfolders:
-    def test_num_proc_geq_subfolders(self):
-        sub = ["/a", "/b", "/c"]
-        parts = _partition_subfolders(sub, 5)
+class TestPartition:
+    def test_num_geq_shards(self):
+        shards = ["/a", "/b", "/c"]
+        parts = _partition(shards, 5)
         assert len(parts) == 5
         assert parts[0] == ["/a"]
         assert parts[1] == ["/b"]

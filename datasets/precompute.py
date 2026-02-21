@@ -4,6 +4,11 @@ Precompute VAE latents and text embeddings from MDS shards (prepare output).
 Works with any prepare script output: datasets/prepare/sstk or datasets/prepare/dreambooth.
 MDS input must have columns: image, caption, width, height.
 
+Layout discovery:
+  - Flat: shards (0, 1, 2, ...) directly under datadir -> output to savedir
+  - Nested: shards under datadir/X -> output to savedir/X for each subfolder X
+  Groups are processed sequentially; each group uses up to num_proc workers.
+
 Example:
   python datasets/precompute.py \\
     --datadir ./mds/ \\
@@ -116,19 +121,52 @@ def _sample_caption(
     return text_preprocessing(captions[idx], clean)[0]
 
 
-def _discover_subfolders(datadir: str) -> List[str]:
-    """Discover worker subfolders (0, 1, 2, ...) from prepare output under datadir."""
-    if not os.path.isdir(datadir):
+def _shards_under(root: str) -> List[str]:
+    """Digit-named shard subdirs (0, 1, 2, ...) under root."""
+    if not os.path.isdir(root):
         return []
-    subfolders = []
+    return [
+        os.path.join(root, name)
+        for name in sorted(os.listdir(root))
+        if os.path.isdir(os.path.join(root, name)) and name.isdigit()
+    ]
+
+
+def discover_groups(datadir: str, savedir: str) -> List[Tuple[str, List[str]]]:
+    """
+    Map datadir structure to output groups: [(outdir, [shard_paths]), ...].
+
+    - Flat: shards (0, 1, 2, ...) directly under datadir -> (savedir, shards)
+    - Nested: shards under datadir/X -> (savedir/X, shards) for each subfolder X
+
+    Raises ValueError if layout is ambiguous (both direct and nested shards) or empty.
+    """
+    if not os.path.isdir(datadir):
+        raise ValueError(f"datadir does not exist: {datadir}")
+
+    direct = _shards_under(datadir)
+    subdirs = []
     for name in sorted(os.listdir(datadir)):
         subpath = os.path.join(datadir, name)
-        if os.path.isdir(subpath) and name.isdigit():
-            subfolders.append(subpath)
-    return subfolders
+        if os.path.isdir(subpath):
+            shards = _shards_under(subpath)
+            if shards:
+                subdirs.append((os.path.join(savedir, name), shards))
+
+    if direct and subdirs:
+        raise ValueError(
+            f"Ambiguous layout under {datadir}: has direct shards and subfolders with shards."
+        )
+    if direct:
+        return [(savedir, direct)]
+    if subdirs:
+        return subdirs
+    raise ValueError(
+        f"No MDS shards under {datadir}: expected digit-named dirs (0, 1, 2, ...)."
+    )
 
 
-def parse_args() -> ArgumentParser:
+def parse_args() -> Namespace:
     parser = ArgumentParser()
     parser.add_argument("--datadir", type=str, required=True, help="MDS shards from prepare.")
     parser.add_argument("--savedir", type=str, default="", help="Output path for precomputed latents.")
@@ -136,7 +174,7 @@ def parse_args() -> ArgumentParser:
         "--num_proc",
         type=int,
         default=None,
-        help="Workers. If None, one per prepare subfolder.",
+        help="Workers per group (default 1). Groups are processed sequentially.",
     )
     parser.add_argument(
         "--resolution",
@@ -331,53 +369,40 @@ def _precompute_worker(task: Tuple[List[str], int, object]) -> None:
     print(f"Worker {worker_idx} finished")
 
 
-def _partition_subfolders(subfolders: List[str], num_proc: int) -> List[List[str]]:
-    if num_proc >= len(subfolders):
-        return [[s] for s in subfolders] + [[] for _ in range(num_proc - len(subfolders))]
-    chunk_size = (len(subfolders) + num_proc - 1) // num_proc
+def _partition(shards: List[str], n: int) -> List[List[str]]:
+    """Split shards into n chunks (may have empty chunks if n > len(shards))."""
+    if n >= len(shards):
+        return [[s] for s in shards] + [[] for _ in range(n - len(shards))]
+    size = (len(shards) + n - 1) // n
     return [
-        subfolders[i * chunk_size : (i + 1) * chunk_size]
-        for i in range(num_proc)
-        if i * chunk_size < len(subfolders)
+        shards[i * size : (i + 1) * size]
+        for i in range(n)
+        if i * size < len(shards)
     ]
 
 
-def main(args: ArgumentParser) -> None:
-    if args.worker_idx is not None and args.subfolder_paths is not None:
-        paths = (
-            args.subfolder_paths
-            if isinstance(args.subfolder_paths, list)
-            else [p.strip() for p in args.subfolder_paths.split(",") if p.strip()]
-        )
-        _precompute_worker((paths, args.worker_idx, args))
-        return
-
-    subfolders = _discover_subfolders(args.datadir)
-    num_proc = args.num_proc
-
-    if subfolders:
-        if num_proc is None:
-            num_proc = len(subfolders)
-        num_proc = min(num_proc, len(subfolders))
-    else:
-        num_proc = 1
-        subfolders = [args.datadir]
-
-    partitions = _partition_subfolders(subfolders, num_proc)
+def _run_group(outdir: str, shards: List[str], num_workers: int, args: object) -> None:
+    """
+    Precompute one group: partition shards across workers, spawn subprocesses,
+    merge worker outputs (outdir/0, 1, ...) into outdir.
+    """
+    num_workers = min(num_workers, len(shards)) or 1
+    partitions = _partition(shards, num_workers)
     partitions = [p for p in partitions if p]
-    num_proc = len(partitions)
+    num_workers = len(partitions)
 
-    os.makedirs(args.savedir, exist_ok=True)
-
-    procs = []
+    os.makedirs(outdir, exist_ok=True)
     script = os.path.abspath(__file__)
+
     with tempfile.TemporaryDirectory() as tmpdir:
-        for i in range(num_proc):
+        procs = []
+        for i in range(num_workers):
             data = {
                 k: v
                 for k, v in vars(args).items()
                 if k not in ("args_file", "worker_idx", "subfolder_paths")
             }
+            data["savedir"] = outdir
             data["worker_idx"] = i
             data["subfolder_paths"] = partitions[i]
             args_path = os.path.join(tmpdir, f"args_{i}.json")
@@ -394,11 +419,32 @@ def main(args: ArgumentParser) -> None:
             if proc.returncode != 0:
                 raise SystemExit(proc.returncode)
 
-    shards_metadata = [
-        os.path.join(args.savedir, str(i), "index.json") for i in range(num_proc)
+    shards_meta = [
+        os.path.join(outdir, str(i), "index.json") for i in range(num_workers)
     ]
-    merge_index(shards_metadata, out=args.savedir, keep_local=True)
-    print("Merged all shards into", args.savedir)
+    merge_index(shards_meta, out=outdir, keep_local=True)
+    print("Merged into", outdir)
+
+
+def main(args: object) -> None:
+    # Worker mode: invoked as subprocess with shard paths and output dir
+    if args.worker_idx is not None and args.subfolder_paths is not None:
+        paths = (
+            args.subfolder_paths
+            if isinstance(args.subfolder_paths, list)
+            else [p.strip() for p in args.subfolder_paths.split(",") if p.strip()]
+        )
+        _precompute_worker((paths, args.worker_idx, args))
+        return
+
+    # Discover groups: each (outdir, shards) maps input layout to output location
+    groups = discover_groups(args.datadir, args.savedir)
+    num_proc = args.num_proc or 1
+
+    # Iterate over groups sequentially; each group uses num_proc workers
+    for outdir, shards in groups:
+        print(f"Precomputing -> {outdir}")
+        _run_group(outdir, shards, num_proc, args)
 
 
 if __name__ == "__main__":

@@ -183,6 +183,8 @@ cd datasets/prepare/dreambooth
 ./run.sh precompute
 ```
 
+Prior preservation (class images): `GENERATE_CLASS_IMAGES=1 ./run.sh prepare` — generates 100 class images with Flux2KleinPipeline if not present.
+
 ### Precompute (shared)
 
 `datasets/precompute.py` works with any prepare output. Run directly or via the prepare run scripts above.
