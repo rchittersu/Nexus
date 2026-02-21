@@ -168,7 +168,7 @@ def discover_groups(datadir: str, savedir: str) -> List[Tuple[str, List[str]]]:
 
 def parse_args() -> Namespace:
     parser = ArgumentParser()
-    parser.add_argument("--datadir", type=str, required=True, help="MDS shards from prepare.")
+    parser.add_argument("--datadir", type=str, default=None, help="MDS shards from prepare.")
     parser.add_argument("--savedir", type=str, default="", help="Output path for precomputed latents.")
     parser.add_argument(
         "--num_proc",
@@ -437,6 +437,8 @@ def main(args: object) -> None:
         _precompute_worker((paths, args.worker_idx, args))
         return
 
+    if args.datadir is None:
+        raise ValueError("--datadir is required")
     # Discover groups: each (outdir, shards) maps input layout to output location
     groups = discover_groups(args.datadir, args.savedir)
     num_proc = args.num_proc or 1
