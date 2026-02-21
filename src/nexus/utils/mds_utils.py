@@ -22,6 +22,15 @@ MDS_T2I_COLUMNS = {
     "caption": "str",
 }
 
+# MDS schema for image-to-image; precompute.py with --mode img2img.
+MDS_IMG2IMG_COLUMNS = {
+    "width": "int32",
+    "height": "int32",
+    "source_image": "jpeg",
+    "image": "jpeg",
+    "caption": "str",
+}
+
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 
 
@@ -67,7 +76,7 @@ def write_path_caption_shard(
 ) -> None:
     """
     Write one MDS shard from (path, caption) pairs.
-    Compatible with precompute.py / StreamingT2IDataset.
+    Compatible with precompute.py / StreamingPrecomputeDataset.
     """
     save_dir = os.path.join(local_mds_dir, str(worker_idx))
     os.makedirs(save_dir, exist_ok=True)

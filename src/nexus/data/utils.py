@@ -1,7 +1,7 @@
 """
 Text preprocessing utilities for image captions.
 
-Used by StreamingT2IDataset during dataset preparation (precompute). Supports
+Used by StreamingPrecomputeDataset during dataset preparation (precompute). Supports
 optional clean_caption mode using ftfy and BeautifulSoup for HTML/Unicode
 normalization.
 """

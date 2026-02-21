@@ -1,22 +1,19 @@
 """
 Precompute VAE latents and text embeddings from MDS shards (prepare output).
 
-Works with any prepare script output: datasets/prepare/sstk or datasets/prepare/dreambooth.
-MDS input must have columns: image, caption, width, height.
+Works with any prepare script output: datasets/prepare/sstk, dreambooth, or img2img.
+MDS input: image, caption, width, height. For --mode img2img: also source_image.
 
 Layout discovery:
   - Flat: shards (0, 1, 2, ...) directly under datadir -> output to savedir
   - Nested: shards under datadir/X -> output to savedir/X for each subfolder X
   Groups are processed sequentially; each group uses up to num_proc workers.
 
-Example:
-  python datasets/precompute.py \\
-    --datadir ./mds/ \\
-    --savedir ./mds_latents_flux2/ \\
-    --num_proc 8 \\
-    --dataloader_workers 4 \\
-    --pretrained_model_name_or_path black-forest-labs/FLUX.2-klein-base-4B \\
-    --batch_size 32
+Example (t2i):
+  python datasets/precompute.py --datadir ./mds/ --savedir ./mds_latents_flux2/ ...
+
+Example (img2img):
+  python datasets/precompute.py --datadir ./img2img/mds/ --savedir ./img2img/latents/ --mode img2img ...
 """
 
 import json
@@ -38,7 +35,7 @@ from torchvision import transforms
 from tqdm import tqdm
 from transformers import Qwen2TokenizerFast, Qwen3ForCausalLM
 
-from nexus.data.t2i_dataset import StreamingT2IDataset
+from nexus.data.streaming_precompute_dataset import StreamingPrecomputeDataset
 from nexus.data.utils import text_preprocessing
 from nexus.utils import DATA_TYPES
 
@@ -49,7 +46,7 @@ def _datadir_to_streams(datadir: Union[List[str], str]) -> List[Stream]:
     return [Stream(local=p) for p in paths]
 
 
-def build_streaming_sstk_t2i_dataloader(
+def build_streaming_precompute_dataloader(
     datadir: Union[List[str], str],
     batch_size: int,
     resolution: int = 512,
@@ -59,6 +56,7 @@ def build_streaming_sstk_t2i_dataloader(
     image_key: str = "image",
     caption_key: str = "caption",
     clean_caption: bool = True,
+    source_image_key: Optional[str] = None,
 ) -> DataLoader:
     streams = _datadir_to_streams(datadir)
 
@@ -80,8 +78,9 @@ def build_streaming_sstk_t2i_dataloader(
         "image_key": image_key,
         "caption_key": caption_key,
         "clean_caption": clean_caption,
+        "source_image_key": source_image_key,
     }
-    dataset = StreamingT2IDataset(**init_kwargs)
+    dataset = StreamingPrecomputeDataset(**init_kwargs)
 
     def custom_collate(batch_items: List[Dict]) -> Dict:
         out = {k: [] for k in batch_items[0].keys()}
@@ -210,6 +209,13 @@ def parse_args() -> Namespace:
     parser.add_argument("--max_sequence_length", type=int, default=128)
     parser.add_argument("--caption_sample_weights", type=float, nargs="+", default=None)
     parser.add_argument("--dataloader_workers", type=int, default=2)
+    parser.add_argument(
+        "--mode",
+        type=str,
+        choices=("t2i", "img2img"),
+        default="t2i",
+        help="t2i: image+caption only. img2img: source_image+image+caption from prepare img2img.",
+    )
     parser.add_argument("--worker_idx", type=int, default=None)
     parser.add_argument("--subfolder_paths", type=str, default=None)
     parser.add_argument("--args_file", type=str, default=None)
@@ -260,8 +266,10 @@ def _precompute_worker(task: Tuple[List[str], int, object]) -> None:
 
     caption_key = "caption"
     image_key = "image"
+    is_img2img = getattr(args, "mode", "t2i") == "img2img"
+    source_image_key = "source_image" if is_img2img else None
 
-    dataloader = build_streaming_sstk_t2i_dataloader(
+    dataloader = build_streaming_precompute_dataloader(
         datadir=subfolder_paths,
         batch_size=args.batch_size,
         resolution=args.resolution,
@@ -271,6 +279,7 @@ def _precompute_worker(task: Tuple[List[str], int, object]) -> None:
         image_key=image_key,
         caption_key=caption_key,
         clean_caption=True,
+        source_image_key=source_image_key,
     )
     ds = dataloader.dataset
     n_samples = getattr(ds, "size", None)
@@ -284,6 +293,8 @@ def _precompute_worker(task: Tuple[List[str], int, object]) -> None:
     columns = {"caption": "str"}
     if args.vae:
         columns[f"latents_{args.resolution}"] = "bytes"
+    if args.vae and is_img2img:
+        columns[f"source_latents_{args.resolution}"] = "bytes"
     if args.text_encoder:
         columns["text_embeds"] = "bytes"
     if args.save_images:
@@ -314,6 +325,16 @@ def _precompute_worker(task: Tuple[List[str], int, object]) -> None:
                             DATA_TYPES[args.save_dtype]
                         )
                         latents_dict[args.resolution] = lat.detach().cpu().numpy()
+
+                    source_latents_dict = {}
+                    if args.vae and is_img2img and "source_image_0" in batch:
+                        source_images = torch.stack(batch["source_image_0"]).to(device)
+                        src_latent_dist = vae.encode(source_images)
+                        assert isinstance(src_latent_dist, AutoencoderKLOutput)
+                        src_lat = src_latent_dist.latent_dist.sample().to(
+                            DATA_TYPES[args.save_dtype]
+                        )
+                        source_latents_dict[args.resolution] = src_lat.detach().cpu().numpy()
 
                     captions_to_encode = []
                     for i in range(batch_size):
@@ -351,6 +372,10 @@ def _precompute_worker(task: Tuple[List[str], int, object]) -> None:
                         mds_sample["text_embeds"] = prompt_embeds[i].tobytes()
                     if args.vae:
                         mds_sample[f"latents_{args.resolution}"] = latents_dict[
+                            args.resolution
+                        ][i].tobytes()
+                    if args.vae and is_img2img and args.resolution in source_latents_dict:
+                        mds_sample[f"source_latents_{args.resolution}"] = source_latents_dict[
                             args.resolution
                         ][i].tobytes()
                     if args.save_images:

@@ -1,0 +1,12 @@
+[
+  {
+    "source_path": "/path/to/source1.jpg",
+    "target_path": "/path/to/target1.jpg",
+    "caption": "add sunglasses"
+  },
+  {
+    "source_path": "/path/to/source2.png",
+    "target_path": "/path/to/target2.png",
+    "caption": "make it winter"
+  }
+]
