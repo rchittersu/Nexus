@@ -23,9 +23,6 @@ model:
   dit:
     class_name: diffusers:Flux2Transformer2DModel
     subfolder: transformer
-  transformer_wrapper:
-    class_name: nexus.models.transformer_wrapper:TransformerWrapper
-    component_name: transformer
 
 train_mode: lora
 
@@ -75,7 +72,6 @@ validation:
 output_dir: flux2-precomputed-lora
 logging_dir: logs
 checkpointing_steps: 500
-checkpoints_total_limit: null
 resume_from_checkpoint: null
 seed: null
 

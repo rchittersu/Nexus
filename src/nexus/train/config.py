@@ -86,7 +86,7 @@ def load_config(path: str | Path) -> SimpleNamespace:
 
     # Resolve model classes
     if hasattr(cfg, "model"):
-        for component in ("dit", "transformer", "vae", "scheduler", "transformer_wrapper"):
+        for component in ("dit", "transformer", "vae", "scheduler"):
             if hasattr(cfg.model, component):
                 comp = getattr(cfg.model, component)
                 if hasattr(comp, "class_name"):

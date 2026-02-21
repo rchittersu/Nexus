@@ -1,5 +1,8 @@
 """Tests for nexus.train.losses"""
 
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
 import pytest
 import torch
 
@@ -9,6 +12,7 @@ from nexus.train.losses import (
     FlowMatchingLoss,
     FlowMatchingWithPriorPreservation,
     LossContext,
+    build_loss_fn,
 )
 
 
@@ -109,3 +113,36 @@ class TestDistillationLoss:
         assert total.dim() == 0
         assert "loss" in logs
         assert "loss/flow" in logs
+
+
+class TestBuildLossFn:
+    def test_build_flow_matching_from_config(self, tmp_path):
+        cfg = _minimal_config(tmp_path, "nexus.train.losses:FlowMatchingLoss", {"base": "mse"})
+        loss_fn = build_loss_fn(cfg)
+        assert isinstance(loss_fn, FlowMatchingLoss)
+        ctx, _ = _make_ctx()
+        total, _ = loss_fn(ctx)
+        assert total.dim() == 0
+
+    def test_missing_loss_class_raises(self, tmp_path):
+        cfg_path = tmp_path / "bad.yaml"
+        cfg_path.write_text("loss:\n  kwargs:\n    base: mse\n")
+        from nexus.train.config import load_config
+        cfg = load_config(cfg_path)
+        with pytest.raises(ValueError, match="loss.class_name"):
+            build_loss_fn(cfg)
+
+    def test_passes_extra_kwargs_to_loss(self, tmp_path):
+        cfg = _minimal_config(tmp_path, "nexus.train.losses:FlowMatchingLoss", {"base": "mse"})
+        loss_fn = build_loss_fn(cfg, model_cfg=SimpleNamespace(), accelerator=MagicMock(), weight_dtype=torch.float32)
+        assert isinstance(loss_fn, FlowMatchingLoss)
+
+
+def _minimal_config(tmp_path, class_name: str, kwargs: dict):
+    from nexus.train.config import load_config
+    import yaml
+    cfg_path = tmp_path / "cfg.yaml"
+    cfg_path.write_text(yaml.dump({
+        "loss": {"class_name": class_name, "kwargs": kwargs},
+    }))
+    return load_config(cfg_path)

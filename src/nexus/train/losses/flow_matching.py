@@ -51,7 +51,7 @@ class FlowMatchingLoss:
       huber_delta: float (when base=huber)
     """
 
-    def __init__(self, base: str = "mse", huber_delta: float = 1.0):
+    def __init__(self, base: str = "mse", huber_delta: float = 1.0, **kwargs):
         self.base = base.lower()
         if self.base not in BASE_LOSSES:
             raise ValueError(f"base must be one of {list(BASE_LOSSES.keys())}, got {base}")

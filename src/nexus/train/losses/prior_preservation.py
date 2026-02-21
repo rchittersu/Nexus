@@ -21,7 +21,7 @@ class FlowMatchingWithPriorPreservation:
       weight: prior loss weight (default 1.0)
     """
 
-    def __init__(self, base: str = "mse", huber_delta: float = 1.0, weight: float = 1.0):
+    def __init__(self, base: str = "mse", huber_delta: float = 1.0, weight: float = 1.0, **kwargs):
         self.base_loss = FlowMatchingLoss(base=base, huber_delta=huber_delta)
         self.prior_weight = weight
 

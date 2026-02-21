@@ -26,12 +26,20 @@ from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import cast_training_params
 from diffusers.utils import check_min_version
-from diffusers.utils.torch_utils import is_compiled_module
 from peft import LoraConfig
 from tqdm.auto import tqdm
 
+from nexus.utils.checkpoint_utils import (
+    make_klein_load_hook,
+    make_klein_save_hook,
+    prune_old_checkpoints,
+    save_final_klein,
+)
+from nexus.utils.log_utils import get_experiment_name, setup_mlflow_log_with
+from nexus.utils.train_utils import unwrap_model
+
 from .config import ns_to_kwargs, parse_args
-from .losses import DistillationLoss
+from .losses import build_loss_fn
 from .train_loop import training_step_precomputed
 from .validation import run_validation
 
@@ -50,42 +58,6 @@ try:
 except ImportError:
     pass
 logger = get_logger(__name__)
-
-
-def _uses_mlflow(report_to) -> bool:
-    """Return True if MLflow is in the report_to list or string."""
-    return report_to == "mlflow" or (isinstance(report_to, list) and "mlflow" in report_to)
-
-
-def _build_loss_fn(cfg, model_cfg=None, accelerator=None, weight_dtype=None):
-    """Build loss from config: instantiate cfg.loss._class(**kwargs)."""
-    loss_cls = getattr(cfg.loss, "_class", None)
-    if loss_cls is None:
-        raise ValueError("Config must define loss.class_name (e.g. nexus.train.losses:FlowMatchingLoss)")
-    loss_kwargs = ns_to_kwargs(getattr(cfg.loss, "kwargs", None))
-    # DistillationLoss needs transformer_cls, device, dtype injected at runtime
-    if loss_cls is DistillationLoss and "pretrained_model_name_or_path" in loss_kwargs:
-        if model_cfg is not None and accelerator is not None and weight_dtype is not None:
-            loss_kwargs["transformer_cls"] = model_cfg.transformer._class
-            loss_kwargs["transformer_subfolder"] = getattr(
-                model_cfg.transformer, "subfolder", "transformer"
-            )
-            loss_kwargs["revision"] = getattr(model_cfg, "revision", None)
-            loss_kwargs["variant"] = getattr(model_cfg, "variant", None)
-            loss_kwargs["device"] = accelerator.device
-            loss_kwargs["dtype"] = weight_dtype
-    return loss_cls(**loss_kwargs)
-
-
-def _prune_old_checkpoints(output_dir: str, limit: int) -> None:
-    """Remove oldest checkpoints if count exceeds limit."""
-    dirs = sorted(
-        [d for d in os.listdir(output_dir) if d.startswith("checkpoint")],
-        key=lambda x: int(x.split("-")[1]),
-    )
-    if len(dirs) >= limit:
-        for d in dirs[: len(dirs) - limit + 1]:
-            shutil.rmtree(os.path.join(output_dir, d))
 
 
 def main(args=None):
@@ -112,34 +84,12 @@ def main(args=None):
     if not pretrained_path:
         raise ValueError("pipeline.pretrained_model_name_or_path is required")
 
-    # --- Accelerator & MLflow ---
+    # --- Accelerator & trackers ---
     logging_dir = Path(cfg.output_dir, cfg.logging_dir)
     proj_config = ProjectConfiguration(project_dir=cfg.output_dir, logging_dir=str(logging_dir))
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
-
-    # MLflow local: set tracking URI and use MLflowTracker with output_dir
     report_to = cfg.report_to
-    if _uses_mlflow(report_to):
-        mlflow_dir = Path(cfg.output_dir).resolve() / "mlruns"
-        mlflow_dir.mkdir(parents=True, exist_ok=True)
-        tracking_uri = (
-            getattr(getattr(cfg, "mlflow", None), "tracking_uri", None) or mlflow_dir.as_uri()
-        )
-        os.environ.setdefault("MLFLOW_TRACKING_URI", tracking_uri)
-        from accelerate.tracking import MLflowTracker
-
-        mlflow_cfg = getattr(cfg, "mlflow", None)
-        mlflow_tracker = MLflowTracker(
-            experiment_name=getattr(mlflow_cfg, "experiment_name", "nexus-flux2"),
-            logging_dir=str(mlflow_dir),
-        )
-        log_with = (
-            mlflow_tracker
-            if report_to == "mlflow"
-            else [t for t in report_to if t != "mlflow"] + [mlflow_tracker]
-        )
-    else:
-        log_with = report_to
+    log_with = setup_mlflow_log_with(report_to, cfg.output_dir, getattr(cfg, "mlflow", None))
 
     accelerator = Accelerator(
         gradient_accumulation_steps=train_cfg.gradient_accumulation_steps,
@@ -243,18 +193,6 @@ def main(args=None):
         transformer.requires_grad_(True)
 
     pipeline_cls = pipeline_cfg._class if train_mode == "lora" else None
-    wrapper_cls = model_cfg.transformer_wrapper._class
-    component_name = getattr(model_cfg.transformer_wrapper, "component_name", "transformer")
-    transformer_wrapper = wrapper_cls(
-        transformer=transformer,
-        pretrained_path=pretrained_path,
-        transformer_cls=model_cfg.transformer._class,
-        subfolder=subfolder,
-        mode=train_mode,
-        lora_config=lora_config,
-        pipeline_cls=pipeline_cls,
-        component_name=component_name,
-    )
 
     if train_cfg.gradient_checkpointing:
         transformer.enable_gradient_checkpointing()
@@ -266,18 +204,28 @@ def main(args=None):
         logger.info("Config copied to %s", dest)
     transformer.to(device=accelerator.device, dtype=weight_dtype)
 
-    def _unwrap(m):
-        m = accelerator.unwrap_model(m)
-        return m._orig_mod if is_compiled_module(m) else m
-
     is_fsdp = getattr(accelerator.state, "fsdp_plugin", None) is not None
-    save_hook = transformer_wrapper.get_save_hook(accelerator=accelerator, is_fsdp=is_fsdp)
-    load_hook = transformer_wrapper.get_load_hook(
+    unwrap = lambda m: unwrap_model(accelerator, m)
+
+    save_hook = make_klein_save_hook(
         accelerator=accelerator,
+        trans_cls=trans_cls,
+        train_mode=train_mode,
+        pipeline_cls=pipeline_cls,
+        unwrap_fn=unwrap,
         is_fsdp=is_fsdp,
+    )
+    load_hook = make_klein_load_hook(
+        accelerator=accelerator,
+        trans_cls=trans_cls,
+        pretrained_path=pretrained_path,
+        subfolder=subfolder,
+        train_mode=train_mode,
+        pipeline_cls=pipeline_cls,
+        lora_config=lora_config,
+        unwrap_fn=unwrap,
         mixed_precision=mp,
     )
-
     accelerator.register_save_state_pre_hook(save_hook)
     accelerator.register_load_state_pre_hook(load_hook)
 
@@ -295,7 +243,7 @@ def main(args=None):
 
     opt_cls = cfg.optimizer._class
     opt_kwargs = ns_to_kwargs(getattr(cfg.optimizer, "kwargs", None))
-    trainable_params = transformer_wrapper.get_trainable_parameters()
+    trainable_params = [p for p in transformer.parameters() if p.requires_grad]
     optimizer = opt_cls(
         trainable_params,
         lr=learning_rate,
@@ -388,19 +336,15 @@ def main(args=None):
                     config_dict[k] = str(v)
                 except Exception:
                     config_dict[k] = repr(v)
-        exp_name = (
-            getattr(getattr(cfg, "mlflow", None), "experiment_name", "nexus-flux2")
-            if _uses_mlflow(report_to)
-            else "nexus-flux2"
-        )
+        exp_name = get_experiment_name(report_to, getattr(cfg, "mlflow", None))
         accelerator.init_trackers(exp_name, config=config_dict)
 
     # --- Loss & validation ---
     loss_cfg = cfg.loss
-    loss_fn = _build_loss_fn(cfg, model_cfg=model_cfg, accelerator=accelerator, weight_dtype=weight_dtype)
+    loss_fn = build_loss_fn(cfg, model_cfg=model_cfg, accelerator=accelerator, weight_dtype=weight_dtype)
 
     if accelerator.is_main_process:
-        logger.info("***** Running training (precomputed SSTK) *****")
+        logger.info("***** Running training *****")
         logger.info("  Data = %s", ds_kwargs.get("local"))
 
     global_step = 0
@@ -487,7 +431,7 @@ def main(args=None):
                 ):
                     run_validation(
                         pipeline_cls=pipeline_cfg._class,
-                        transformer=_unwrap(transformer),
+                        transformer=unwrap_model(accelerator, transformer),
                         validation_prompt=val_cfg.prompt,
                         accelerator=accelerator,
                         step=global_step,
@@ -504,7 +448,7 @@ def main(args=None):
                 ) and global_step % cfg.checkpointing_steps == 0:
                     limit = getattr(cfg, "checkpoints_total_limit", None)
                     if limit is not None:
-                        _prune_old_checkpoints(cfg.output_dir, limit)
+                        prune_old_checkpoints(cfg.output_dir, limit)
                     save_path = os.path.join(cfg.output_dir, f"checkpoint-{global_step}")
                     accelerator.save_state(save_path)
                     logger.info(f"Saved state to {save_path}")
@@ -515,10 +459,13 @@ def main(args=None):
     accelerator.wait_for_everyone()
 
     if accelerator.is_main_process:
-        transformer_wrapper.save_final(
-            output_dir=cfg.output_dir,
-            model=transformer,
-            unwrap_fn=_unwrap,
+        save_final_klein(
+            output_dir=Path(cfg.output_dir),
+            transformer=transformer,
+            train_mode=train_mode,
+            pipeline_cls=pipeline_cls,
+            unwrap_fn=unwrap,
+            logger=logger,
         )
 
     accelerator.end_training()

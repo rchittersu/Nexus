@@ -1,5 +1,5 @@
 """
-Shared utilities: io, logging, device/dtype helpers, etc.
+Shared utilities: io, logging, device/dtype helpers, train utils, etc.
 """
 
 import torch
