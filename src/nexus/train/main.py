@@ -5,8 +5,8 @@ Config-driven via YAML. Entry point for LoRA or full fine-tuning of Flux.2
 transformers on precomputed VAE latents and text embeddings.
 
 Usage:
-    accelerate launch -m nexus.train --config configs/klein4b/run1.yaml
-    accelerate launch -m nexus.train --config configs/klein4b/run1.yaml \\
+    accelerate launch -m nexus.train --config configs/klein4b/t2i_finetune.yaml
+    accelerate launch -m nexus.train --config configs/klein4b/t2i_finetune.yaml \\
         --precomputed_data_dir /path/to/mds --output_dir ./out
 """
 
@@ -39,7 +39,7 @@ from nexus.utils.checkpoint_utils import (
     prune_old_checkpoints,
     save_final_klein,
 )
-from nexus.utils.log_utils import get_experiment_name, setup_mlflow_log_with
+from nexus.utils.log_utils import _require_mlflow, get_output_dir, setup_mlflow_log_with
 from nexus.utils.train_utils import unwrap_model
 
 from .config import ns_to_kwargs, parse_args
@@ -89,11 +89,17 @@ def main(args=None):
         raise ValueError("pipeline.pretrained_model_name_or_path is required")
 
     # --- Accelerator & trackers ---
-    logging_dir = Path(cfg.output_dir, cfg.logging_dir)
-    proj_config = ProjectConfiguration(project_dir=cfg.output_dir, logging_dir=str(logging_dir))
+    _require_mlflow(cfg)
+    mlflow_cfg = cfg.mlflow
+    log_root = Path(getattr(cfg, "log_root", "logs")).resolve()
+    experiment_name = mlflow_cfg.experiment_name
+    run_name = mlflow_cfg.run_name
+    output_dir = str(get_output_dir(log_root, experiment_name, run_name))
+    cfg.output_dir = output_dir
+
+    proj_config = ProjectConfiguration(project_dir=output_dir, logging_dir=output_dir)
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
-    report_to = cfg.report_to
-    log_with = setup_mlflow_log_with(report_to, cfg.output_dir, getattr(cfg, "mlflow", None))
+    log_with = setup_mlflow_log_with(log_root, mlflow_cfg)
 
     accelerator = Accelerator(
         gradient_accumulation_steps=train_cfg.gradient_accumulation_steps,
@@ -340,7 +346,7 @@ def main(args=None):
                     config_dict[k] = str(v)
                 except Exception:
                     config_dict[k] = repr(v)
-        exp_name = get_experiment_name(report_to, getattr(cfg, "mlflow", None))
+        exp_name = cfg.mlflow.experiment_name
         accelerator.init_trackers(exp_name, config=config_dict)
 
     # --- Loss & validation ---

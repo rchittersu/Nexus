@@ -21,7 +21,7 @@ cd datasets/prepare/sstk && ./run.sh all
 
 ```bash
 accelerate launch -m nexus.train.main \
-  --config configs/klein4b/run1.yaml \
+  --config configs/klein4b/t2i_finetune.yaml \
   --precomputed_data_dir /path/to/mds_latents \
   --output_dir ./runs/exp1
 ```
@@ -154,7 +154,7 @@ loss:
 ## Project layout
 
 ```
-configs/klein4b/     # base, run1, dreambooth, distillation
+configs/klein4b/     # base, t2i_finetune, t2i_dreambooth, t2i_distillation
 scripts/train.sh     # wrapper for accelerate launch
 src/nexus/
 ├── train/           # main, config, train_loop, losses, validation

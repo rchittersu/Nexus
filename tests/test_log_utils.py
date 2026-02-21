@@ -3,49 +3,45 @@ from types import SimpleNamespace
 
 import pytest
 
-from nexus.utils.log_utils import get_experiment_name, setup_mlflow_log_with, uses_mlflow
+from nexus.utils.log_utils import _require_mlflow, get_output_dir, setup_mlflow_log_with
 
 
-class TestUsesMlflow:
-    def test_mlflow_string(self):
-        assert uses_mlflow("mlflow") is True
+class TestRequireMlflow:
+    def test_raises_when_report_to_not_mlflow(self):
+        cfg = SimpleNamespace(report_to="tensorboard", mlflow=SimpleNamespace(experiment_name="x"))
+        with pytest.raises(ValueError, match="report_to must be 'mlflow'"):
+            _require_mlflow(cfg)
 
-    def test_mlflow_in_list(self):
-        assert uses_mlflow(["tensorboard", "mlflow"]) is True
+    def test_raises_when_no_mlflow_config(self):
+        cfg = SimpleNamespace(report_to="mlflow")
+        with pytest.raises(ValueError, match="mlflow config required"):
+            _require_mlflow(cfg)
 
-    def test_no_mlflow(self):
-        assert uses_mlflow("tensorboard") is False
-        assert uses_mlflow(["tensorboard"]) is False
-        assert uses_mlflow(None) is False
+    def test_raises_when_no_experiment_name(self):
+        cfg = SimpleNamespace(report_to="mlflow", mlflow=SimpleNamespace(run_name="x"))
+        with pytest.raises(ValueError, match="experiment_name is required"):
+            _require_mlflow(cfg)
+
+    def test_raises_when_no_run_name(self):
+        cfg = SimpleNamespace(report_to="mlflow", mlflow=SimpleNamespace(experiment_name="x"))
+        with pytest.raises(ValueError, match="run_name is required"):
+            _require_mlflow(cfg)
+
+    def test_passes_when_configured(self):
+        cfg = SimpleNamespace(report_to="mlflow", mlflow=SimpleNamespace(experiment_name="my-exp", run_name="my-run"))
+        _require_mlflow(cfg)  # no raise
 
 
 class TestSetupMlflowLogWith:
-    def test_returns_report_to_when_no_mlflow(self, tmp_path):
-        result = setup_mlflow_log_with("tensorboard", tmp_path)
-        assert result == "tensorboard"
-        result = setup_mlflow_log_with(["tensorboard"], tmp_path)
-        assert result == ["tensorboard"]
-
-    def test_returns_tracker_when_mlflow(self, tmp_path):
-        result = setup_mlflow_log_with("mlflow", tmp_path)
+    def test_returns_tracker(self, tmp_path):
+        cfg = SimpleNamespace(experiment_name="my-exp", run_name="my-run", tracking_uri=None)
+        result = setup_mlflow_log_with(tmp_path, cfg)
         from accelerate.tracking import MLflowTracker
         assert isinstance(result, MLflowTracker)
         assert (tmp_path / "mlruns").exists()
 
-    def test_uses_mlflow_cfg(self, tmp_path):
-        cfg = SimpleNamespace(experiment_name="my-exp", tracking_uri=None)
-        result = setup_mlflow_log_with("mlflow", tmp_path, cfg)
-        from accelerate.tracking import MLflowTracker
-        assert isinstance(result, MLflowTracker)
 
-
-class TestGetExperimentName:
-    def test_default_when_no_mlflow(self):
-        assert get_experiment_name("tensorboard", None) == "nexus-flux2"
-
-    def test_from_mlflow_cfg(self):
-        cfg = SimpleNamespace(experiment_name="my-exp")
-        assert get_experiment_name("mlflow", cfg) == "my-exp"
-
-    def test_default_when_mlflow_but_no_cfg(self):
-        assert get_experiment_name("mlflow", None) == "nexus-flux2"
+class TestGetOutputDir:
+    def test_output_dir_path(self, tmp_path):
+        out = get_output_dir(tmp_path, "nexus-flux2", "flux2-dreambooth-lora")
+        assert out == tmp_path / "experiments" / "nexus-flux2-flux2-dreambooth-lora"

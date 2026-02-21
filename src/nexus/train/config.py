@@ -122,7 +122,7 @@ def parse_args(input_args=None) -> SimpleNamespace:
     """Parse CLI: --config required, optional overrides for output_dir, precomputed_data_dir, etc."""
     parser = argparse.ArgumentParser(description="Flux.2 Klein training (YAML config).")
     parser.add_argument("--config", type=str, required=True, help="Path to YAML config.")
-    parser.add_argument("--output_dir", type=str, default=None)
+    parser.add_argument("--output_dir", type=str, default=None, help="Override mlflow.run_name")
     parser.add_argument("--precomputed_data_dir", type=str, default=None)
     parser.add_argument("--max_train_steps", type=int, default=None)
     parser.add_argument("--resume_from_checkpoint", type=str, default=None)
@@ -138,7 +138,9 @@ def parse_args(input_args=None) -> SimpleNamespace:
             cfg.dataset.kwargs = SimpleNamespace()
         cfg.dataset.kwargs.local = args.precomputed_data_dir
     if args.output_dir:
-        cfg.output_dir = args.output_dir
+        if not hasattr(cfg, "mlflow"):
+            cfg.mlflow = SimpleNamespace()
+        cfg.mlflow.run_name = args.output_dir
     if args.max_train_steps is not None:
         cfg.train.max_steps = args.max_train_steps
     if args.resume_from_checkpoint is not None:

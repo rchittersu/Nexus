@@ -2,7 +2,7 @@
 Training: config-driven Flux.2 Klein on precomputed SSTK MDS data.
 
   from nexus.train import main
-    main()  # Uses configs/klein4b/run1.yaml, MDS from precompute.py
+    main()  # Uses configs/klein4b/t2i_finetune.yaml, MDS from precompute.py
 """
 
 __all__ = ["main"]

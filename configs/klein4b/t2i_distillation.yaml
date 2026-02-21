@@ -1,4 +1,4 @@
-# Klein 4B run1 — SSTK training. latent_channels, text_embed_hidden from base.
+# Distillation: flow + teacher. latent_channels, text_embed_hidden from base.
 extends: base.yaml
 
 dataset:
@@ -39,12 +39,15 @@ train:
   dataloader_num_workers: 0
 
 loss:
-  class_name: nexus.losses:FlowMatchingLoss
+  class_name: nexus.losses:DistillationLoss
   weighting_scheme: none
   logit_mean: 0.0
   logit_std: 1.0
   kwargs:
     base: mse
+    pretrained_model_name_or_path: black-forest-labs/FLUX.2-klein-base-4B
+    flow_weight: 0.5
+    distillation_weight: 0.5
 
 optimizer:
   class_name: torch.optim:AdamW
@@ -60,8 +63,6 @@ validation:
   num_images: 4
   seed: 42
 
-output_dir: flux2-precomputed-lora
-logging_dir: logs
 checkpointing_steps: 500
 resume_from_checkpoint: null
 seed: null
@@ -71,4 +72,5 @@ report_to: mlflow
 
 mlflow:
   tracking_uri: null
-  experiment_name: flux2-lora-exp1
+  experiment_name: klein4b-t2i-distillation
+  run_name: batch4-lora4

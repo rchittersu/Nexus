@@ -1,5 +1,5 @@
-# Base Flux2 Klein 4B — pipeline and latent/text embed dims only.
-# Child configs inherit; latent_channels and text_embed_hidden are injected into dataset.kwargs.
+# Base Flux2 Klein 4B — FLUX.2-klein-base-4B (undistilled foundation model).
+# Child configs inherit; latent_channels and text_embed_hidden injected into dataset.kwargs.
 # log_root: project-level logs dir; mlruns at log_root/mlruns, runs at log_root/experiments/{exp}-{run}
 
 log_root: logs

@@ -1,34 +1,19 @@
 """
 Validation during training: build pipeline with trained transformer, generate sample
-images, and log to TensorBoard, WandB, or MLflow.
+images, and log to MLflow.
 """
 
 import logging
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-
-from nexus.utils.log_utils import log_validation_images_to_mlflow
 import torch
 from diffusers.training_utils import free_memory
 from tqdm.auto import tqdm
 
+from nexus.utils.log_utils import log_validation_images_to_mlflow
+
 logger = logging.getLogger(__name__)
-
-try:
-    import wandb
-
-    WANDB_AVAILABLE = True
-except ImportError:
-    WANDB_AVAILABLE = False
-
-try:
-    import mlflow
-
-    MLFLOW_AVAILABLE = True
-except ImportError:
-    MLFLOW_AVAILABLE = False
 
 
 def run_validation(
@@ -48,7 +33,7 @@ def run_validation(
 ) -> None:
     """
     Build a pipeline with the trained transformer, run inference, and log images
-    to the configured trackers (TensorBoard, WandB, MLflow).
+    to MLflow.
     """
     pipeline = pipeline_cls.from_pretrained(
         pretrained_path,
@@ -77,20 +62,7 @@ def run_validation(
         images.append(out.images[0])
 
     for tracker in accelerator.trackers:
-        if tracker.name == "tensorboard":
-            np_images = np.stack([np.asarray(img) for img in images])
-            tracker.writer.add_images("validation", np_images, step, dataformats="NHWC")
-        if tracker.name == "wandb" and WANDB_AVAILABLE:
-            tracker.log(
-                {
-                    "validation": [
-                        wandb.Image(img, caption=f"{i}: {validation_prompt}")
-                        for i, img in enumerate(images)
-                    ]
-                },
-                step=step,
-            )
-        if tracker.name == "mlflow" and MLFLOW_AVAILABLE:
+        if tracker.name == "mlflow":
             log_validation_images_to_mlflow(images, step, output_dir)
 
     del pipeline

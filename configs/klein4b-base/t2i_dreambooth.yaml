@@ -1,5 +1,4 @@
-# DreamBooth: prior preservation. latent_channels, text_embed_hidden from base.
-# Matches: accelerate launch train_dreambooth_lora_flux2_klein.py ...
+# DreamBooth: prior preservation on Klein 4B base. latent_channels, text_embed_hidden from base.
 extends: base.yaml
 
 dataset:
@@ -68,8 +67,6 @@ validation:
   inference_steps: 4
   guidance_scale: 1
 
-output_dir: flux2-dreambooth-lora
-logging_dir: logs
 checkpointing_steps: 500
 resume_from_checkpoint: null
 seed: null
@@ -79,4 +76,5 @@ report_to: mlflow
 
 mlflow:
   tracking_uri: null
-  experiment_name: nexus-flux2
+  experiment_name: klein4b-base-t2i-dreambooth
+  run_name: batch5-lora4

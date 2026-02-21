@@ -101,10 +101,10 @@ class TestLoadConfigFull:
         return Path(__file__).resolve().parents[1] / "configs" / "klein4b"
 
     def test_load_run1_resolves_classes(self, config_dir):
-        """run1.yaml extends base and resolves dataset, model, loss, optimizer classes."""
-        if not (config_dir / "run1.yaml").exists():
-            pytest.skip("configs/klein4b/run1.yaml not found")
-        cfg = load_config(config_dir / "run1.yaml")
+        """t2i_finetune.yaml extends base and resolves dataset, model, loss, optimizer classes."""
+        if not (config_dir / "t2i_finetune.yaml").exists():
+            pytest.skip("configs/klein4b/t2i_finetune.yaml not found")
+        cfg = load_config(config_dir / "t2i_finetune.yaml")
         assert hasattr(cfg.dataset, "_class")
         assert hasattr(cfg.model.transformer, "_class")
         assert hasattr(cfg.loss, "_class")
@@ -114,10 +114,10 @@ class TestLoadConfigFull:
         assert cfg.train.max_steps == 1000
 
     def test_load_distillation_has_loss_class_and_kwargs(self, config_dir):
-        """distillation.yaml has DistillationLoss with pretrained path in kwargs."""
-        if not (config_dir / "distillation.yaml").exists():
-            pytest.skip("configs/klein4b/distillation.yaml not found")
-        cfg = load_config(config_dir / "distillation.yaml")
+        """t2i_distillation.yaml has DistillationLoss with pretrained path in kwargs."""
+        if not (config_dir / "t2i_distillation.yaml").exists():
+            pytest.skip("configs/klein4b/t2i_distillation.yaml not found")
+        cfg = load_config(config_dir / "t2i_distillation.yaml")
         assert hasattr(cfg.loss, "_class")
         assert "pretrained_model_name_or_path" in vars(cfg.loss.kwargs)
         assert "flow_weight" in vars(cfg.loss.kwargs)
@@ -136,18 +136,18 @@ class TestParseArgs:
         """CLI overrides apply when using real config. Requires train deps."""
         pytest.importorskip("diffusers")
         config_dir = Path(__file__).resolve().parents[1] / "configs" / "klein4b"
-        run1 = config_dir / "run1.yaml"
-        if not run1.exists():
-            pytest.skip("configs/klein4b/run1.yaml not found")
+        t2i_finetune = config_dir / "t2i_finetune.yaml"
+        if not t2i_finetune.exists():
+            pytest.skip("configs/klein4b/t2i_finetune.yaml not found")
         args = [
-            "--config", str(run1),
+            "--config", str(t2i_finetune),
             "--output_dir", "/cli/out",
             "--precomputed_data_dir", "/cli/mds",
             "--max_train_steps", "500",
         ]
         cfg = parse_args(args)
-        assert cfg.output_dir == "/cli/out"
+        assert cfg.mlflow.run_name == "/cli/out"
         assert cfg.dataset.kwargs.local == "/cli/mds"
         assert cfg.train.max_steps == 500
         assert hasattr(cfg, "_config_path")
-        assert "run1" in cfg._config_path
+        assert "t2i_finetune" in cfg._config_path
