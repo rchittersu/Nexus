@@ -111,10 +111,15 @@ Nexus/
 │   │   ├── t2i_dataset.py       # Streaming T2I (used by precompute)
 │   │   └── utils.py            # Text preprocessing for captions
 │   └── utils/              # Device/dtype helpers
-└── datasets/prepare/sstk/  # Data prep scripts
-    ├── prepare.py          # Images → MDS
-    ├── precompute.py       # MDS → latents + embeddings
-    └── run.sh
+└── datasets/               # Data prep scripts
+    ├── utils.py            # Shared MDS helpers for prepare
+    ├── precompute.py       # MDS → latents + embeddings (any prepare output)
+    ├── prepare/sstk/       # SSTK: images_txt + captions → MDS
+    │   ├── prepare.py
+    │   └── run.sh
+    └── prepare/dreambooth/ # DreamBooth: dog-example / instance+class → MDS
+        ├── prepare.py
+        └── run.sh
 ```
 
 ---
@@ -159,34 +164,30 @@ accelerate launch -m nexus.train.main \
 
 ## Dataset preparation
 
-Training expects MDS shards with precomputed latents and text embeddings. Two steps:
+Training expects MDS shards with precomputed latents and text embeddings. Two steps: **prepare** (images → MDS) then **precompute** (MDS → latents + embeddings).
 
-### 1. Prepare — images → MDS
-
-Packs images and captions into MDS shards.
+### SSTK (large-scale)
 
 ```bash
 cd datasets/prepare/sstk
-./run.sh prepare
+./run.sh prepare   # or precompute or all
 ```
 
-Edit `run.sh` to change paths and parameters (e.g. `--images_txt`, `--local_mds_dir`, `--size`, `--datadir`, `--savedir`).
+Edit `run.sh` for paths: `--images_txt`, `--local_mds_dir`, `--datadir`, `--savedir`.
 
-### 2. Precompute — MDS → latents + embeddings
-
-Encodes images with the VAE and text with the encoder; writes new MDS shards.
+### DreamBooth (dog example)
 
 ```bash
+cd datasets/prepare/dreambooth
+./run.sh prepare   # downloads diffusers/dog-example
 ./run.sh precompute
 ```
 
-Or both:
+### Precompute (shared)
 
-```bash
-./run.sh all
-```
+`datasets/precompute.py` works with any prepare output. Run directly or via the prepare run scripts above.
 
-Output: MDS directory with `latents_512`, `text_embeds`, `text_ids`, etc. Use this path as `dataset.kwargs.local` or `--precomputed_data_dir`.
+Output: MDS with `latents_512`, `text_embeds`, etc. Use as `dataset.kwargs.local` or `--precomputed_data_dir`.
 
 ---
 

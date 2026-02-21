@@ -30,7 +30,7 @@ where = ["src"]
 markers = [
     "integration: marks tests as integration (slow, require GPU/model)",
 ]
-testpaths = ["tests", "datasets/prepare/sstk/tests"]
+testpaths = ["tests", "datasets/prepare/sstk/tests", "datasets/prepare/dreambooth/tests", "datasets/tests"]
 
 [tool.ruff]
 line-length = 100

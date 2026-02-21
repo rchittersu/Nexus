@@ -1,7 +1,7 @@
 """
 Precomputed SSTK dataset: MDS shards with VAE latents and text embeddings.
 
-Produced by datasets/prepare/sstk/precompute.py. Schema: caption, latents_512
+Produced by datasets/precompute.py. Schema: caption, latents_512
 (or latents_1024, etc.), text_embeds, text_ids. Enables training without
 running VAE or text encoder during training.
 """
@@ -53,7 +53,7 @@ class PrecomputedSSTKDataset(StreamingDataset):
     """
     StreamingDataset for MDS shards with precomputed VAE latents and text embeddings.
 
-    Produced by datasets/prepare/sstk/precompute.py.
+    Produced by datasets/precompute.py.
     Supports multiple resolutions via latents_512, latents_1024, etc.
     """
 

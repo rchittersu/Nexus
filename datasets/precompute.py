@@ -1,3 +1,19 @@
+"""
+Precompute VAE latents and text embeddings from MDS shards (prepare output).
+
+Works with any prepare script output: datasets/prepare/sstk or datasets/prepare/dreambooth.
+MDS input must have columns: image, caption, width, height.
+
+Example:
+  python datasets/precompute.py \\
+    --datadir ./mds/ \\
+    --savedir ./mds_latents_flux2/ \\
+    --num_proc 8 \\
+    --dataloader_workers 4 \\
+    --pretrained_model_name_or_path black-forest-labs/FLUX.2-klein-base-4B \\
+    --batch_size 32
+"""
+
 import json
 import os
 import subprocess
@@ -35,24 +51,24 @@ def build_streaming_sstk_t2i_dataloader(
     drop_last: bool = False,
     shuffle: bool = True,
     num_workers: int = 0,
-    image_key: str = 'image',
-    caption_key: str = 'caption',
+    image_key: str = "image",
+    caption_key: str = "caption",
     clean_caption: bool = True,
 ) -> DataLoader:
-    assert resize_sizes is not None, 'Must provide target resolution for image resizing'
+    assert resize_sizes is not None, "Must provide target resolution for image resizing"
 
     streams = _datadir_to_streams(datadir)
 
     transforms_list = [
         transforms.Compose([
-                transforms.Resize(
-                    size,
-                    interpolation=transforms.InterpolationMode.BICUBIC,
-                ),
-                transforms.CenterCrop(size),
-                transforms.ToTensor(),
-                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-            ])
+            transforms.Resize(
+                size,
+                interpolation=transforms.InterpolationMode.BICUBIC,
+            ),
+            transforms.CenterCrop(size),
+            transforms.ToTensor(),
+            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+        ])
         for size in resize_sizes
     ]
 
@@ -74,7 +90,6 @@ def build_streaming_sstk_t2i_dataloader(
                 out[key].append(value)
         return out
 
-    # num_workers: safe to use >0 when workers are launched via subprocess (not multiprocessing.Pool)
     dataloader = DataLoader(
         dataset=dataset,
         batch_size=batch_size,
@@ -85,9 +100,8 @@ def build_streaming_sstk_t2i_dataloader(
 
     return dataloader
 
+
 def _caption_sample_weights(n: int, weights_arg: Optional[List[float]]) -> np.ndarray:
-    """Build probability weights for n caption indices. If weights_arg has fewer
-    entries, remaining indices get equal share. Normalized to sum to 1."""
     if weights_arg is None or len(weights_arg) == 0:
         return np.ones(n) / n
     w = np.array(weights_arg[:n], dtype=np.float64)
@@ -103,14 +117,12 @@ def _sample_caption(
     rng: np.random.Generator,
     clean: bool = True,
 ) -> str:
-    """Sample one caption by index, preprocess, return string."""
     idx = rng.choice(len(captions), p=weights)
-    chosen = captions[idx]
-    return text_preprocessing(chosen, clean)[0]
+    return text_preprocessing(captions[idx], clean)[0]
 
 
 def _discover_subfolders(datadir: str) -> List[str]:
-    """Discover worker subfolders (0, 1, 2, ...) from prepare.py output under datadir."""
+    """Discover worker subfolders (0, 1, 2, ...) from prepare output under datadir."""
     if not os.path.isdir(datadir):
         return []
     subfolders = []
@@ -121,160 +133,55 @@ def _discover_subfolders(datadir: str) -> List[str]:
     return subfolders
 
 
-"""Example usage:
-# Workers launched via subprocess (so DataLoader num_workers>0 is safe):
-python precompute.py \
-    --datadir ./sa1b/mds/ \
-    --savedir ./sa1b/mds_latents_flux2/ \
-    --num_proc 8 \
-    --dataloader_workers 4 \
-    --pretrained_model_name_or_path <path_to_pretrained_model> \
-    --batch_size 32
-# With 16 prepare subfolders and --num_proc 8: each worker processes 2 subfolders as streams.
-# --dataloader_workers controls DataLoader parallelism per worker (default: 2).
-"""
-
-
 def parse_args() -> ArgumentParser:
-    """Parse command-line arguments."""
     parser = ArgumentParser()
-    parser.add_argument(
-        "--datadir",
-        type=str,
-        required=True,
-        help="Local directory to store mds shards.",
-    )
-    parser.add_argument(
-        "--savedir",
-        type=str,
-        default="",
-        help="Remote path to upload MDS-formatted shards to.",
-    )
+    parser.add_argument("--datadir", type=str, required=True, help="MDS shards from prepare.")
+    parser.add_argument("--savedir", type=str, default="", help="Output path for precomputed latents.")
     parser.add_argument(
         "--num_proc",
         type=int,
         default=None,
-        help="Number of worker processes. If None, use one per prepare.py subfolder. "
-        "Each worker gets multiple subfolders as streams.",
+        help="Workers. If None, one per prepare subfolder.",
     )
     parser.add_argument(
         "--image_resolutions",
         type=int,
         nargs="+",
-        default=[512, 1024],
-        help="List of image resolutions to use for processing.",
+        default=[512],
     )
-    parser.add_argument(
-        "--save_images",
-        default=False,
-        action="store_true",
-        help="If True, also save images, else only latents",
-    )
+    parser.add_argument("--save_images", default=False, action="store_true")
     parser.add_argument(
         "--model_dtype",
         type=str,
         choices=("float16", "bfloat16", "float32"),
         default="bfloat16",
-        help="Data type for the encoding models",
     )
-    parser.add_argument(
-        "--save_dtype",
-        type=str,
-        choices=("float16", "float32"),
-        default="float16",
-        help="Data type to save the latents",
-    )
+    parser.add_argument("--save_dtype", type=str, choices=("float16", "float32"), default="float16")
     parser.add_argument(
         "--pretrained_model_name_or_path",
         type=str,
         default="black-forest-labs/FLUX.2-klein-base-4B",
-        help="Path to pretrained model.",
     )
-    parser.add_argument(
-        "--batch_size",
-        type=int,
-        default=32,
-        help="Batch size per device to use for encoding.",
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=42,
-        help="Seed for random number generation.",
-    )
-    parser.add_argument(
-        "--vae",
-        default=True,
-        action="store_true",
-        help="If True, encode images with VAE and save latents.",
-    )
-    parser.add_argument(
-        "--no_vae",
-        dest="vae",
-        action="store_false",
-        help="Disable VAE encoding.",
-    )
-    parser.add_argument(
-        "--text_encoder",
-        default=True,
-        action="store_true",
-        help="If True, encode captions with text encoder and save embeddings.",
-    )
-    parser.add_argument(
-        "--no_text_encoder",
-        dest="text_encoder",
-        action="store_false",
-        help="Disable text encoder encoding.",
-    )
+    parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--vae", default=True, action="store_true")
+    parser.add_argument("--no_vae", dest="vae", action="store_false")
+    parser.add_argument("--text_encoder", default=True, action="store_true")
+    parser.add_argument("--no_text_encoder", dest="text_encoder", action="store_false")
     parser.add_argument(
         "--text_encoder_out_layers",
         type=int,
         nargs="+",
         default=[9, 18, 27],
-        help="Text encoder hidden layers to compute the final text embeddings.",
     )
-    parser.add_argument(
-        "--max_sequence_length",
-        type=int,
-        default=128,
-        help="Maximum sequence length for text encoding.",
-    )
-    parser.add_argument(
-        "--caption_sample_weights",
-        type=float,
-        nargs="+",
-        default=None,
-        help="Weights for sampling among multiple captions by index (e.g. 0.5,0.3,0.2). "
-        "If fewer weights than captions, remaining indices get equal weight. Default: uniform.",
-    )
-    parser.add_argument(
-        "--dataloader_workers",
-        type=int,
-        default=2,
-        help="DataLoader num_workers per subprocess. Safe to use >0 because workers are "
-        "launched via subprocess (not multiprocessing.Pool). Default: 2.",
-    )
-    parser.add_argument(
-        "--worker_idx",
-        type=int,
-        default=None,
-        help="[Internal] Worker index when run as subprocess. Do not set manually.",
-    )
-    parser.add_argument(
-        "--subfolder_paths",
-        type=str,
-        default=None,
-        help="[Internal] Comma-separated subfolder paths for this worker. Do not set manually.",
-    )
-    parser.add_argument(
-        "--args_file",
-        type=str,
-        default=None,
-        help="[Internal] Path to JSON file with full args (used when launching worker subprocess).",
-    )
+    parser.add_argument("--max_sequence_length", type=int, default=128)
+    parser.add_argument("--caption_sample_weights", type=float, nargs="+", default=None)
+    parser.add_argument("--dataloader_workers", type=int, default=2)
+    parser.add_argument("--worker_idx", type=int, default=None)
+    parser.add_argument("--subfolder_paths", type=str, default=None)
+    parser.add_argument("--args_file", type=str, default=None)
     args = parser.parse_args()
 
-    # Worker mode: load args from file (avoids CLI serialization of complex types)
     if args.args_file is not None:
         with open(args.args_file) as f:
             data = json.load(f)
@@ -285,10 +192,8 @@ def parse_args() -> ArgumentParser:
 
 
 def _precompute_worker(task: Tuple[List[str], int, object]) -> None:
-    """Worker: load multiple subfolders as streams, encode, write to savedir/{worker_idx}."""
     subfolder_paths, worker_idx, args = task
 
-    # Assign GPU round-robin
     if torch.cuda.is_available():
         num_gpus = torch.cuda.device_count()
         device_idx = worker_idx % num_gpus
@@ -343,10 +248,7 @@ def _precompute_worker(task: Tuple[List[str], int, object]) -> None:
             n_samples = len(ds)
         except (TypeError, NotImplementedError):
             n_samples = "?"
-    print(
-        f"Worker {worker_idx} -> subdirs: {subfolder_paths}, "
-        f"device={device}, samples={n_samples}"
-    )
+    print(f"Worker {worker_idx} -> subdirs: {subfolder_paths}, device={device}, samples={n_samples}")
 
     columns = {"caption": "str"}
     if args.vae:
@@ -423,9 +325,7 @@ def _precompute_worker(task: Tuple[List[str], int, object]) -> None:
                         mds_sample["text_embeds"] = prompt_embeds[i].tobytes()
                     if args.vae:
                         for size in args.image_resolutions:
-                            mds_sample[f"latents_{size}"] = latents_dict[size][
-                                i
-                            ].tobytes()
+                            mds_sample[f"latents_{size}"] = latents_dict[size][i].tobytes()
                     if args.save_images:
                         mds_sample["image"] = batch["sample"][i][image_key]
                     writer.write(mds_sample)
@@ -443,7 +343,6 @@ def _precompute_worker(task: Tuple[List[str], int, object]) -> None:
 
 
 def _partition_subfolders(subfolders: List[str], num_proc: int) -> List[List[str]]:
-    """Partition subfolders across num_proc workers (contiguous chunks)."""
     if num_proc >= len(subfolders):
         return [[s] for s in subfolders] + [[] for _ in range(num_proc - len(subfolders))]
     chunk_size = (len(subfolders) + num_proc - 1) // num_proc
@@ -455,14 +354,6 @@ def _partition_subfolders(subfolders: List[str], num_proc: int) -> List[List[str
 
 
 def main(args: ArgumentParser) -> None:
-    """Precompute image and text latents and store them in MDS format.
-
-    Launches workers via subprocess (not multiprocessing.Pool) so each can use
-    DataLoader with num_workers>0. Each worker gets multiple prepare.py subfolders
-    as streams, processes them, writes to savedir/{worker_idx}.
-    """
-
-    # Worker mode: run single worker and exit
     if args.worker_idx is not None and args.subfolder_paths is not None:
         paths = (
             args.subfolder_paths
@@ -484,13 +375,11 @@ def main(args: ArgumentParser) -> None:
         subfolders = [args.datadir]
 
     partitions = _partition_subfolders(subfolders, num_proc)
-    partitions = [p for p in partitions if p]  # drop empty
+    partitions = [p for p in partitions if p]
     num_proc = len(partitions)
 
     os.makedirs(args.savedir, exist_ok=True)
 
-    # Launch workers as subprocesses (not multiprocessing.Pool) so each can use
-    # DataLoader with num_workers>0 without nested-process issues.
     procs = []
     script = os.path.abspath(__file__)
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -517,8 +406,7 @@ def main(args: ArgumentParser) -> None:
                 raise SystemExit(proc.returncode)
 
     shards_metadata = [
-        os.path.join(args.savedir, str(i), "index.json")
-        for i in range(num_proc)
+        os.path.join(args.savedir, str(i), "index.json") for i in range(num_proc)
     ]
     merge_index(shards_metadata, out=args.savedir, keep_local=True)
     print("Merged all shards into", args.savedir)
