@@ -235,7 +235,7 @@ output_dir: runs/run2
 | `model.transformer_wrapper` | LoRA component name (`transformer` for Flux2, `unet` for SD-style). |
 | `dataset` | Dataset class + kwargs (`local`, `resolution`, `latent_channels`, `text_embed_hidden`, etc.). |
 | `collate` | Collate function for the dataloader. |
-| `train` | Batch size, epochs, max_steps, LR, accumulation, gradient checkpointing, etc. |
+| `train` | Batch size, max_steps, LR, accumulation, gradient checkpointing, etc. |
 | `train_mode` | `lora` or `full`. |
 | `lora` | Rank, alpha, dropout, `target_modules`. |
 | `loss` | Loss class + kwargs (base, weighting_scheme, etc.). |

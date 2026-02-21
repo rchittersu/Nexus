@@ -94,7 +94,6 @@ def main(args=None):
 
     # --- Config & logging ---
     config_path = getattr(cfg, "_config_path", None)
-    logger.info("Config: %s", config_path or "(unknown)")
 
     # MPS (Apple Silicon) does not support bf16
     if torch.backends.mps.is_available() and getattr(cfg, "mixed_precision", None) == "bf16":
@@ -158,7 +157,9 @@ def main(args=None):
         datefmt="%m/%d/%Y %H:%M:%S",
         level=logging.INFO,
     )
-    logger.info(str(accelerator.state))
+    if accelerator.is_main_process:
+        logger.info("Config: %s", config_path or "(unknown)")
+        logger.info(str(accelerator.state))
     if accelerator.is_local_main_process:
         transformers.utils.logging.set_verbosity_warning()
         diffusers.utils.logging.set_verbosity_info()
@@ -328,10 +329,11 @@ def main(args=None):
 
     num_warmup = train_cfg.lr_warmup_steps * accelerator.num_processes
     len_dl = math.ceil(len(train_dataloader) / accelerator.num_processes)
-    num_updates = math.ceil(len_dl / train_cfg.gradient_accumulation_steps)
+    num_updates_per_epoch = math.ceil(len_dl / train_cfg.gradient_accumulation_steps)
     max_steps_cfg = getattr(train_cfg, "max_steps", None)
+    # When max_steps not set: default to 1 epoch
     num_training_steps = (
-        train_cfg.num_epochs * num_updates if max_steps_cfg is None else max_steps_cfg
+        num_updates_per_epoch if max_steps_cfg is None else max_steps_cfg
     )
 
     lr_scheduler = get_scheduler(
@@ -347,11 +349,36 @@ def main(args=None):
         transformer, optimizer, train_dataloader, lr_scheduler
     )
 
-    num_updates_per_epoch = math.ceil(len(train_dataloader) / train_cfg.gradient_accumulation_steps)
+    len_dl_per_process = len(train_dataloader)
     max_steps = (
-        train_cfg.num_epochs * num_updates_per_epoch if max_steps_cfg is None else max_steps_cfg
+        num_updates_per_epoch if max_steps_cfg is None else max_steps_cfg
     )
     num_epochs = math.ceil(max_steps / num_updates_per_epoch)
+
+    # --- Training loop math (printed once, main process only) ---
+    total_bs = (
+        train_cfg.batch_size
+        * accelerator.num_processes
+        * train_cfg.gradient_accumulation_steps
+    )
+    if accelerator.is_main_process:
+        logger.info("***** Training loop *****")
+        logger.info(
+            "  Dataset: len=%s (per process) | batch_size=%s | accumulation=%s | num_proc=%s",
+            len_dl_per_process,
+            train_cfg.batch_size,
+            train_cfg.gradient_accumulation_steps,
+            accelerator.num_processes,
+        )
+        logger.info(
+            "  Steps: per_epoch=%s | max_steps=%s | num_epochs=%s | effective_batch_size=%s",
+            num_updates_per_epoch,
+            max_steps,
+            num_epochs,
+            total_bs,
+        )
+        if max_steps_cfg is not None:
+            logger.info("  (max_steps=%s set)", max_steps_cfg)
 
     if accelerator.is_main_process:
         config_dict = {}
@@ -371,14 +398,10 @@ def main(args=None):
     # --- Loss & validation ---
     loss_cfg = cfg.loss
     loss_fn = _build_loss_fn(cfg, model_cfg=model_cfg, accelerator=accelerator, weight_dtype=weight_dtype)
-    total_bs = (
-        train_cfg.batch_size * accelerator.num_processes * train_cfg.gradient_accumulation_steps
-    )
-    logger.info("***** Running training (precomputed SSTK) *****")
-    logger.info(f"  Data = {ds_kwargs.get('local')}")
-    logger.info(f"  Num epochs = {num_epochs}")
-    logger.info(f"  Total batch size = {total_bs}")
-    logger.info(f"  Total steps = {max_steps}")
+
+    if accelerator.is_main_process:
+        logger.info("***** Running training (precomputed SSTK) *****")
+        logger.info("  Data = %s", ds_kwargs.get("local"))
 
     global_step = 0
     first_epoch = 0

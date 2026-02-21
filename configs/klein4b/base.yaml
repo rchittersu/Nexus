@@ -37,8 +37,7 @@ lora:
 
 train:
   batch_size: 4
-  num_epochs: 1
-  max_steps: null
+  max_steps: null   # required or use 1 epoch; CLI: --max_train_steps
   gradient_accumulation_steps: 1
   gradient_checkpointing: false
   learning_rate: 1.0e-4
