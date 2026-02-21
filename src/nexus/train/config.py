@@ -80,13 +80,20 @@ def load_config(path: str | Path) -> SimpleNamespace:
     if hasattr(cfg, "collate") and cfg.collate and hasattr(cfg.collate, "class_name"):
         cfg.collate._fn = _resolve_class(cfg.collate.class_name)
 
+    # Resolve pipeline class (top-level)
+    if hasattr(cfg, "pipeline") and hasattr(cfg.pipeline, "class_name"):
+        cfg.pipeline._class = _resolve_class(cfg.pipeline.class_name)
+
     # Resolve model classes
     if hasattr(cfg, "model"):
-        for component in ("transformer", "vae", "scheduler", "pipeline", "transformer_wrapper"):
+        for component in ("dit", "transformer", "vae", "scheduler", "transformer_wrapper"):
             if hasattr(cfg.model, component):
                 comp = getattr(cfg.model, component)
                 if hasattr(comp, "class_name"):
                     comp._class = _resolve_class(comp.class_name)
+        # dit is primary; alias transformer -> dit for backwards compat
+        if hasattr(cfg.model, "dit") and not hasattr(cfg.model, "transformer"):
+            cfg.model.transformer = cfg.model.dit
 
     # Resolve distillation source_transformer if present
     if hasattr(cfg, "distillation") and hasattr(cfg.distillation, "source_transformer"):
@@ -98,22 +105,9 @@ def load_config(path: str | Path) -> SimpleNamespace:
     if hasattr(cfg, "optimizer") and hasattr(cfg.optimizer, "class_name"):
         cfg.optimizer._class = _resolve_class(cfg.optimizer.class_name)
 
-    # Resolve loss class and nested losses for MetaLoss
+    # Resolve loss class
     if hasattr(cfg, "loss") and hasattr(cfg.loss, "class_name"):
         cfg.loss._class = _resolve_class(cfg.loss.class_name)
-    if hasattr(cfg, "loss") and hasattr(cfg.loss, "kwargs"):
-        losses_list = getattr(cfg.loss.kwargs, "losses", None)
-        if losses_list is not None:
-            for item in losses_list:
-                cls_path = getattr(item, "class_name", None) or (
-                    item.get("class_name") if isinstance(item, dict) else None
-                )
-                if cls_path:
-                    cls = _resolve_class(cls_path)
-                    if isinstance(item, dict):
-                        item["_class"] = cls
-                    else:
-                        item._class = cls
 
     return cfg
 

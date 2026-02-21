@@ -9,6 +9,8 @@ description = "Config-driven Flux.2 Klein training on precomputed SSTK data"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "ftfy",
+    "beautifulsoup4",
     "torch>=2.0",
     "diffusers>=0.36.0",
     "transformers>=4.41.2",

@@ -1,8 +1,10 @@
 """Tests for datasets/prepare/sstk/prepare.py"""
 
+import importlib.util
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -12,11 +14,22 @@ import pytest
 from PIL import Image
 from streaming import StreamingDataset
 
+# Load sstk prepare module without polluting sys.path (for unit tests)
+_sstk_dir = Path(__file__).resolve().parents[1]
+_spec = importlib.util.spec_from_file_location("sstk_prepare", _sstk_dir / "prepare.py")
+prepare = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(prepare)
+parse_arguments = prepare.parse_arguments
+write_images = prepare.write_images
 
-# Add sstk directory for imports (prepare.py is in parent of tests/)
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from prepare import parse_arguments, write_images, main
+def _run_prepare_main(argv: list[str]) -> None:
+    """Run prepare main() via subprocess to avoid multiprocessing pickle issues."""
+    subprocess.run(
+        [sys.executable, str(_sstk_dir / "prepare.py")] + argv,
+        check=True,
+        capture_output=True,
+    )
 
 
 def _sanitize_for_filename(text: str, max_len: int = 80) -> str:
@@ -96,10 +109,10 @@ class TestWriteImagesFiltering:
         images_path = np.array([str(tmp_path / 'image.bmp')])
         mock_args.min_size = 0  # Disable size filter for this test
 
-        with patch('prepare.current_process_index', return_value=0), \
-             patch('prepare.MDSWriter') as mock_writer, \
-             patch('prepare.tqdm', lambda x: x), \
-             patch('prepare.os.makedirs'):
+        with patch.object(prepare, '_current_process_index', return_value=0), \
+             patch.object(prepare, 'MDSWriter') as mock_writer, \
+             patch.object(prepare, 'tqdm', lambda x: x), \
+             patch.object(prepare.os, 'makedirs'):
             writer_instance = MagicMock()
             mock_writer.return_value = writer_instance
 
@@ -123,10 +136,10 @@ class TestWriteImagesFiltering:
             mock_args.min_aspect_ratio = 0.67
             mock_args.max_aspect_ratio = 1.33
 
-            with patch('prepare.current_process_index', return_value=0), \
-                 patch('prepare.MDSWriter') as mock_writer, \
-                 patch('prepare.tqdm', lambda x: x), \
-                 patch('prepare.os.makedirs'):
+            with patch.object(prepare, '_current_process_index', return_value=0), \
+                 patch.object(prepare, 'MDSWriter') as mock_writer, \
+                 patch.object(prepare, 'tqdm', lambda x: x), \
+                 patch.object(prepare.os, 'makedirs'):
                 writer_instance = MagicMock()
                 mock_writer.return_value = writer_instance
 
@@ -151,10 +164,10 @@ class TestWriteImagesFiltering:
         images_path = np.array([str(img_path)])
         mock_args.min_size = 512  # 256 < 512, should skip
 
-        with patch('prepare.current_process_index', return_value=0), \
-             patch('prepare.MDSWriter') as mock_writer, \
-             patch('prepare.tqdm', lambda x: x), \
-             patch('prepare.os.makedirs'):
+        with patch.object(prepare, '_current_process_index', return_value=0), \
+             patch.object(prepare, 'MDSWriter') as mock_writer, \
+             patch.object(prepare, 'tqdm', lambda x: x), \
+             patch.object(prepare.os, 'makedirs'):
             writer_instance = MagicMock()
             mock_writer.return_value = writer_instance
 
@@ -172,10 +185,10 @@ class TestWriteImagesFiltering:
         images_path = np.array([str(img_path)])
         mock_args.min_size = 0
 
-        with patch('prepare.current_process_index', return_value=0), \
-             patch('prepare.MDSWriter') as mock_writer, \
-             patch('prepare.tqdm', lambda x: x), \
-             patch('prepare.os.makedirs'):
+        with patch.object(prepare, '_current_process_index', return_value=0), \
+             patch.object(prepare, 'MDSWriter') as mock_writer, \
+             patch.object(prepare, 'tqdm', lambda x: x), \
+             patch.object(prepare.os, 'makedirs'):
             writer_instance = MagicMock()
             mock_writer.return_value = writer_instance
 
@@ -194,10 +207,10 @@ class TestWriteImagesFiltering:
         images_path = np.array([str(img_path)])
         mock_args.min_size = 0  # Disable size filter
 
-        with patch('prepare.current_process_index', return_value=0), \
-             patch('prepare.MDSWriter') as mock_writer, \
-             patch('prepare.tqdm', lambda x: x), \
-             patch('prepare.os.makedirs'):
+        with patch.object(prepare, '_current_process_index', return_value=0), \
+             patch.object(prepare, 'MDSWriter') as mock_writer, \
+             patch.object(prepare, 'tqdm', lambda x: x), \
+             patch.object(prepare.os, 'makedirs'):
             writer_instance = MagicMock()
             mock_writer.return_value = writer_instance
 
@@ -216,10 +229,10 @@ class TestWriteImagesFiltering:
         images_path = np.array([str(img_path)])
         mock_args.min_size = 0
 
-        with patch('prepare.current_process_index', return_value=0), \
-             patch('prepare.MDSWriter') as mock_writer, \
-             patch('prepare.tqdm', lambda x: x), \
-             patch('prepare.os.makedirs'):
+        with patch.object(prepare, '_current_process_index', return_value=0), \
+             patch.object(prepare, 'MDSWriter') as mock_writer, \
+             patch.object(prepare, 'tqdm', lambda x: x), \
+             patch.object(prepare.os, 'makedirs'):
             writer_instance = MagicMock()
             mock_writer.return_value = writer_instance
 
@@ -238,10 +251,10 @@ class TestWriteImagesFiltering:
         images_path = np.array([str(img_path)])
         mock_args.min_size = 512
 
-        with patch('prepare.current_process_index', return_value=0), \
-             patch('prepare.MDSWriter') as mock_writer, \
-             patch('prepare.tqdm', lambda x: x), \
-             patch('prepare.os.makedirs'):
+        with patch.object(prepare, '_current_process_index', return_value=0), \
+             patch.object(prepare, 'MDSWriter') as mock_writer, \
+             patch.object(prepare, 'tqdm', lambda x: x), \
+             patch.object(prepare.os, 'makedirs'):
             writer_instance = MagicMock()
             mock_writer.return_value = writer_instance
 
@@ -261,10 +274,10 @@ class TestWriteImagesFiltering:
         images_path = np.array([str(img_path)])
         mock_args.min_size = 512
 
-        with patch('prepare.current_process_index', return_value=0), \
-             patch('prepare.MDSWriter') as mock_writer, \
-             patch('prepare.tqdm', lambda x: x), \
-             patch('prepare.os.makedirs'):
+        with patch.object(prepare, '_current_process_index', return_value=0), \
+             patch.object(prepare, 'MDSWriter') as mock_writer, \
+             patch.object(prepare, 'tqdm', lambda x: x), \
+             patch.object(prepare.os, 'makedirs'):
             writer_instance = MagicMock()
             mock_writer.return_value = writer_instance
 
@@ -285,10 +298,10 @@ class TestWriteImagesFiltering:
         images_path = np.array([str(img_path)])
         mock_args.min_size = 512
 
-        with patch('prepare.current_process_index', return_value=0), \
-             patch('prepare.MDSWriter') as mock_writer, \
-             patch('prepare.tqdm', lambda x: x), \
-             patch('prepare.os.makedirs'):
+        with patch.object(prepare, '_current_process_index', return_value=0), \
+             patch.object(prepare, 'MDSWriter') as mock_writer, \
+             patch.object(prepare, 'tqdm', lambda x: x), \
+             patch.object(prepare.os, 'makedirs'):
             writer_instance = MagicMock()
             mock_writer.return_value = writer_instance
 
@@ -308,10 +321,10 @@ class TestWriteImagesFiltering:
         images_path = np.array([str(img_path)])
         mock_args.min_size = 0
 
-        with patch('prepare.current_process_index', return_value=0), \
-             patch('prepare.MDSWriter') as mock_writer, \
-             patch('prepare.tqdm', lambda x: x), \
-             patch('prepare.os.makedirs'):
+        with patch.object(prepare, '_current_process_index', return_value=0), \
+             patch.object(prepare, 'MDSWriter') as mock_writer, \
+             patch.object(prepare, 'tqdm', lambda x: x), \
+             patch.object(prepare.os, 'makedirs'):
             writer_instance = MagicMock()
             mock_writer.return_value = writer_instance
 
@@ -345,22 +358,18 @@ class TestMain:
         paths = [str(tmp_path / f'img{i}.png') for i in range(1, 5)]
         images_txt.write_text('\n'.join(paths))
 
-        with patch.object(sys, 'argv', [
-            'prepare.py',
+        _run_prepare_main([
             '--images_txt', str(images_txt),
             '--local_mds_dir', str(mds_dir),
             '--num_proc', '2',
             '--seed', '42',
             '--size', '4',
             '--min_size', '512',
-        ]), patch('prepare.merge_index') as mock_merge:
-            main()
+        ])
 
-            assert mds_dir.exists()
-            mock_merge.assert_called_once()
-            # Check that shard directories were created
-            for i in range(2):
-                assert (mds_dir / str(i)).exists()
+        assert mds_dir.exists()
+        for i in range(2):
+            assert (mds_dir / str(i)).exists()
 
 
 class TestIntegrationPrepareAndRead:
@@ -407,16 +416,14 @@ class TestIntegrationPrepareAndRead:
         images_txt.write_text('\n'.join(image_paths))
 
         # 3. Run prepare.py (no mocking - real MDS write)
-        with patch.object(sys, 'argv', [
-            'prepare.py',
+        _run_prepare_main([
             '--images_txt', str(images_txt),
             '--local_mds_dir', str(mds_dir),
             '--num_proc', '2',
             '--seed', '42',
             '--size', str(num_images),
             '--min_size', '512',
-        ]):
-            main()
+        ])
 
         assert mds_dir.exists()
 

@@ -36,15 +36,18 @@ class TestLoadConfig:
     """Tests for load_config()."""
 
     def test_load_minimal_config(self, tmp_path):
-        """Load config with loss class only (no heavy deps)."""
+        """Load config with loss class_name and kwargs."""
         cfg_path = tmp_path / "minimal.yaml"
         cfg_path.write_text("""
 loss:
-  class_name: nexus.train.losses:MSELoss
+  class_name: nexus.train.losses:FlowMatchingLoss
+  kwargs:
+    base: mse
 """)
         cfg = load_config(cfg_path)
         assert hasattr(cfg.loss, "_class")
-        assert cfg.loss._class.__name__ == "MSELoss"
+        assert hasattr(cfg.loss, "kwargs")
+        assert cfg.loss.kwargs.base == "mse"
 
     def test_extends_merges_base(self, tmp_path):
         """Child config deep-merges over base."""
@@ -75,7 +78,7 @@ c: 3
         base = tmp_path / "base.yaml"
         base.write_text("x: 1")
         child = tmp_path / "child.yaml"
-        child.write_text("extends: base.yaml\n y: 2")
+        child.write_text("extends: base.yaml\ny: 2")
         cfg = load_config(child)
         assert not hasattr(cfg, "extends")
 
@@ -83,7 +86,7 @@ c: 3
         """Invalid class_name format raises ValueError."""
         cfg_path = tmp_path / "bad.yaml"
         cfg_path.write_text("""
-loss:
+dataset:
   class_name: "NoColon"
 """)
         with pytest.raises(ValueError, match="module:ClassName"):
@@ -98,31 +101,26 @@ class TestLoadConfigFull:
         return Path(__file__).resolve().parents[1] / "configs" / "klein4b"
 
     def test_load_run1_resolves_classes(self, config_dir):
-        """run1.yaml extends base and resolves all class references."""
+        """run1.yaml extends base and resolves dataset, model, loss, optimizer classes."""
         if not (config_dir / "run1.yaml").exists():
             pytest.skip("configs/klein4b/run1.yaml not found")
         cfg = load_config(config_dir / "run1.yaml")
         assert hasattr(cfg.dataset, "_class")
         assert hasattr(cfg.model.transformer, "_class")
         assert hasattr(cfg.loss, "_class")
+        assert hasattr(cfg.loss, "kwargs")
+        assert cfg.loss.kwargs.base == "mse"
         assert hasattr(cfg.optimizer, "_class")
         assert cfg.train.max_steps == 1000
 
-    def test_load_distillation_resolves_source_transformer_and_metaloss(self, config_dir):
-        """distillation.yaml resolves source_transformer and MetaLoss with losses."""
+    def test_load_distillation_has_loss_class_and_kwargs(self, config_dir):
+        """distillation.yaml has DistillationLoss with pretrained path in kwargs."""
         if not (config_dir / "distillation.yaml").exists():
             pytest.skip("configs/klein4b/distillation.yaml not found")
         cfg = load_config(config_dir / "distillation.yaml")
-        assert hasattr(cfg, "distillation")
-        assert hasattr(cfg.distillation, "source_transformer")
-        st = cfg.distillation.source_transformer
-        assert hasattr(st, "_class")
-        assert st._class.__name__ == "Flux2Transformer2DModel"
-        assert cfg.loss._class.__name__ == "MetaLoss"
-        losses = cfg.loss.kwargs.losses
-        assert len(losses) == 2
-        assert hasattr(losses[0], "_class") or losses[0].get("_class")
-        assert hasattr(losses[1], "_class") or losses[1].get("_class")
+        assert hasattr(cfg.loss, "_class")
+        assert "pretrained_model_name_or_path" in vars(cfg.loss.kwargs)
+        assert "flow_weight" in vars(cfg.loss.kwargs)
 
 
 class TestParseArgs:

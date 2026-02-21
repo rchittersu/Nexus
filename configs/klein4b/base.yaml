@@ -2,34 +2,27 @@
 # Experiment configs use extends: base.yaml and override train, output, validation.
 
 dataset:
-  class_name: nexus.data.precomputed_sstk:PrecomputedSSTKDataset
+  class_name: nexus.data.precomputed_sstk_dataset:PrecomputedSSTKDataset
   kwargs:
     local: null
     resolution: 512
-    latent_channels: 16
-    text_embed_seq_len: 512
-    text_embed_hidden: 0
-    text_ids_dim: 4
+    latent_channels: 32
+    text_embed_hidden: 7680  # 2560*3 for Flux.2 Klein
     shuffle: true
 
 collate:
-  class_name: nexus.data.precomputed_sstk:collate_precomputed
+  class_name: nexus.data.precomputed_sstk_dataset:collate_precomputed
+
+# Pipeline: load everything (vae, scheduler, text_encoder, etc.) from here via from_pretrained.
+# DiT is loaded separately from model.dit.
+pipeline:
+  class_name: diffusers:Flux2KleinPipeline
+  pretrained_model_name_or_path: black-forest-labs/FLUX.2-klein-base-4B
 
 model:
-  pretrained_model_name_or_path: black-forest-labs/FLUX.2-klein-base-4B
-  revision: null
-  variant: null
-  transformer:
+  dit:
     class_name: diffusers:Flux2Transformer2DModel
     subfolder: transformer
-  vae:
-    class_name: diffusers:AutoencoderKLFlux2
-    subfolder: vae
-  scheduler:
-    class_name: diffusers:FlowMatchEulerDiscreteScheduler
-    subfolder: scheduler
-  pipeline:
-    class_name: diffusers:Flux2KleinPipeline
   transformer_wrapper:
     class_name: nexus.models.transformer_wrapper:TransformerWrapper
     component_name: transformer
@@ -58,11 +51,13 @@ train:
   dataloader_num_workers: 0
 
 loss:
-  class_name: nexus.train.losses:MSELoss
+  class_name: nexus.train.losses:FlowMatchingLoss
   weighting_scheme: none
   logit_mean: 0.0
   logit_std: 1.0
   mode_scale: 1.29
+  kwargs:
+    base: mse
 
 optimizer:
   class_name: torch.optim:AdamW

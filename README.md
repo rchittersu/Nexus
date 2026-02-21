@@ -107,7 +107,8 @@ Nexus/
 │   ├── models/
 │   │   └── transformer_wrapper.py   # Generic LoRA/full wrapper
 │   ├── data/
-│   │   ├── precomputed_sstk.py  # MDS dataset
+│   │   ├── precomputed_sstk_dataset.py      # MDS dataset
+│   │   ├── precomputed_dreambooth_dataset.py  # DreamBooth instance+class
 │   │   ├── t2i_dataset.py       # Streaming T2I (used by precompute)
 │   │   └── utils.py            # Text preprocessing for captions
 │   └── utils/              # Device/dtype, MDS prepare helpers
@@ -217,64 +218,47 @@ output_dir: runs/exp1
 | `dataset` | Class + kwargs for `PrecomputedSSTKDataset` |
 | `model` | Transformer, VAE, scheduler, pipeline, wrapper (Flux2 Klein by default) |
 | `train` | Batch size, steps, LR, gradient accumulation, etc. |
-| `loss` | `class_name` (MSELoss, L1Loss, HuberLoss, LogCoshLoss, DistillationLoss, MetaLoss) + kwargs |
-| `distillation` | `source_transformer` path + `alpha` for teacher-student training |
+| `loss` | `class_name` (FlowMatchingLoss, FlowMatchingWithPriorPreservation, DistillationLoss) + kwargs |
 | `lora` | Rank, alpha, dropout, target_modules |
 | `validation` | Steps, prompt (set to enable), num_images |
 | `mlflow` | `experiment_name`, `tracking_uri` |
 
 ### Loss
 
+Specify the loss class explicitly. Each loss receives full `LossContext` and returns `(scalar, log_dict)`.
+
+**FlowMatchingLoss** (default): Flow-matching loss with configurable base (mse, l1, huber, logcosh).
+
 ```yaml
 loss:
-  class_name: nexus.train.losses:MSELoss   # default
-  # nexus.train.losses:L1Loss
-  # nexus.train.losses:HuberLoss  # add kwargs: { delta: 1.0 }
-  # nexus.train.losses:LogCoshLoss
+  class_name: nexus.train.losses:FlowMatchingLoss
   weighting_scheme: none  # none, sigma_sqrt, logit_normal, mode, cosmap
-```
-
-### Distillation
-
-Train with a source (teacher) transformer. `DistillationLoss` is pure distillation (pred vs teacher_pred only). Use `MetaLoss` to combine flow-matching and distillation:
-
-```yaml
-distillation:
-  source_transformer:
-    pretrained_model_name_or_path: path/to/teacher
-    class_name: diffusers:Flux2Transformer2DModel
-    subfolder: transformer
-
-loss:
-  class_name: nexus.train.losses:MetaLoss
   kwargs:
-    losses:
-      - class_name: nexus.train.losses:MSELoss
-        scale: 0.5
-        name: flow
-      - class_name: nexus.train.losses:DistillationLoss
-        scale: 0.5
-        name: distillation
+    base: mse  # mse | l1 | huber | logcosh
+    huber_delta: 1.0  # when base=huber
 ```
 
-### MetaLoss
-
-Combine multiple losses with configurable scales: `L = sum(scale_i * loss_i(...))`. Each component is logged as `loss/{name}` (e.g. in TensorBoard/MLflow):
+**FlowMatchingWithPriorPreservation** (DreamBooth): Instance + class prior preservation. Requires even batch size (first half instance, second half class).
 
 ```yaml
 loss:
-  class_name: nexus.train.losses:MetaLoss
+  class_name: nexus.train.losses:FlowMatchingWithPriorPreservation
   kwargs:
-    losses:
-      - class_name: nexus.train.losses:MSELoss
-        scale: 1.0
-        name: flow
-      - class_name: nexus.train.losses:L1Loss
-        scale: 0.1
-        name: l1
+    base: mse
+    weight: 1.0  # prior loss weight
 ```
 
-When distillation is enabled, the loss must include `DistillationLoss` (e.g. via MetaLoss). If `DistillationLoss` is used without distillation config, training will raise an error.
+**DistillationLoss**: Flow loss + distillation from teacher. Teacher is loaded automatically; `transformer_cls`, `device`, `dtype` are injected at runtime from the model config.
+
+```yaml
+loss:
+  class_name: nexus.train.losses:DistillationLoss
+  kwargs:
+    base: mse
+    pretrained_model_name_or_path: black-forest-labs/FLUX.2-klein-base-4B
+    flow_weight: 0.5
+    distillation_weight: 0.5
+```
 
 ### Transformer wrapper
 
@@ -287,7 +271,7 @@ Generic for Flux2, SD3, etc. Use `component_name: transformer` (Flux2) or `compo
 With `report_to: mlflow` (default in Klein configs):
 
 - Logs go to `{output_dir}/mlruns`
-- Metrics: loss, lr; MetaLoss components logged as loss/flow, loss/distillation, etc.
+- Metrics: loss, lr; loss components logged as loss/flow, loss/instance, loss/prior, loss/distillation, etc.
 - Validation images: logged when `validation.prompt` is set
 - Config and hyperparams: stored with the run
 

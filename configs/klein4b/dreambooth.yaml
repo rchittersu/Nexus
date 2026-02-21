@@ -1,0 +1,23 @@
+# DreamBooth training: prior preservation, instance + class MDS streams.
+extends: base.yaml
+
+dataset:
+  class_name: nexus.data.precomputed_dreambooth_dataset:PrecomputedDreamBoothDataset
+  kwargs:
+    local: null
+    instance_subdir: instance
+    class_subdir: class
+    with_prior_preservation: true
+    resolution: 512
+    latent_channels: 32
+    text_embed_hidden: 7680  # 2560*3 for Flux.2 Klein
+    shuffle: true
+
+collate:
+  class_name: nexus.data.precomputed_dreambooth_dataset:collate_precomputed_dreambooth
+
+loss:
+  class_name: nexus.train.losses:FlowMatchingWithPriorPreservation
+  kwargs:
+    base: mse
+    weight: 1.0

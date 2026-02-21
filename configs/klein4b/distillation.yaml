@@ -1,26 +1,15 @@
-# Distillation training: student learns from a source (teacher) transformer.
+# Distillation training: teacher created inside loss, student learns from flow + teacher.
 # Usage: accelerate launch -m nexus.train.main --config configs/klein4b/distillation.yaml
 
 extends: base.yaml
 
-distillation:
-  source_transformer:
-    pretrained_model_name_or_path: black-forest-labs/FLUX.2-klein-base-4B
-    class_name: diffusers:Flux2Transformer2DModel
-    subfolder: transformer
-    revision: null
-    variant: null
-
 loss:
-  class_name: nexus.train.losses:MetaLoss
+  class_name: nexus.train.losses:DistillationLoss
   kwargs:
-    losses:
-      - class_name: nexus.train.losses:MSELoss
-        scale: 0.5
-        name: flow
-      - class_name: nexus.train.losses:DistillationLoss
-        scale: 0.5
-        name: distillation
+    base: mse
+    pretrained_model_name_or_path: black-forest-labs/FLUX.2-klein-base-4B
+    flow_weight: 0.5
+    distillation_weight: 0.5
 
 train:
   batch_size: 4

@@ -80,6 +80,7 @@ def _current_process_index() -> int:
 
 
 def write_images(images_path: np.ndarray, args: ArgumentParser) -> None:
+    assert isinstance(images_path, np.ndarray), "images_path must be np.ndarray"
     idx = _current_process_index()
     print(f"Writing {len(images_path)} images in process {idx}")
     save_dir = os.path.join(args.local_mds_dir, str(idx))

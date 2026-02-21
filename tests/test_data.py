@@ -1,10 +1,10 @@
-"""Tests for nexus.data.precomputed_sstk"""
+"""Tests for nexus.data.precomputed_sstk_dataset"""
 
 import numpy as np
 import pytest
 import torch
 
-from nexus.data.precomputed_sstk import collate_precomputed
+from nexus.data.precomputed_sstk_dataset import collate_precomputed
 
 
 class TestCollatePrecomputed:

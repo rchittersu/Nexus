@@ -31,11 +31,24 @@ from peft import LoraConfig
 from tqdm.auto import tqdm
 
 from .config import ns_to_kwargs, parse_args
-from .losses import _loss_uses_distillation
+from .losses import DistillationLoss
 from .train_loop import training_step_precomputed
 from .validation import run_validation
 
 check_min_version("0.37.0.dev0")
+
+# Pipeline class -> (vae_cls, vae_subfolder), (scheduler_cls, scheduler_subfolder)
+# Used when loading everything from pipeline except DiT.
+_PIPELINE_COMPONENTS = {}
+try:
+    from diffusers import AutoencoderKLFlux2, Flux2KleinPipeline, FlowMatchEulerDiscreteScheduler
+
+    _PIPELINE_COMPONENTS[Flux2KleinPipeline] = {
+        "vae": (AutoencoderKLFlux2, "vae"),
+        "scheduler": (FlowMatchEulerDiscreteScheduler, "scheduler"),
+    }
+except ImportError:
+    pass
 logger = get_logger(__name__)
 
 
@@ -44,61 +57,24 @@ def _uses_mlflow(report_to) -> bool:
     return report_to == "mlflow" or (isinstance(report_to, list) and "mlflow" in report_to)
 
 
-def _build_loss_fn(cfg):
-    """Build loss from config, resolving MetaLoss nested losses and class references."""
-    import importlib
-
-    loss_cfg = cfg.loss
-    loss_class = getattr(loss_cfg, "_class", None)
-    if loss_class is None:
-        from .losses import MSELoss
-
-        return MSELoss()
-
-    loss_kwargs = ns_to_kwargs(getattr(loss_cfg, "kwargs", None))
-    losses_list = loss_kwargs.pop("losses", None)
-
-    if losses_list is not None:
-        resolved = []
-        for item in losses_list:
-            cls = getattr(item, "_class", None) or (
-                item.get("_class") if isinstance(item, dict) else None
+def _build_loss_fn(cfg, model_cfg=None, accelerator=None, weight_dtype=None):
+    """Build loss from config: instantiate cfg.loss._class(**kwargs)."""
+    loss_cls = getattr(cfg.loss, "_class", None)
+    if loss_cls is None:
+        raise ValueError("Config must define loss.class_name (e.g. nexus.train.losses:FlowMatchingLoss)")
+    loss_kwargs = ns_to_kwargs(getattr(cfg.loss, "kwargs", None))
+    # DistillationLoss needs transformer_cls, device, dtype injected at runtime
+    if loss_cls is DistillationLoss and "pretrained_model_name_or_path" in loss_kwargs:
+        if model_cfg is not None and accelerator is not None and weight_dtype is not None:
+            loss_kwargs["transformer_cls"] = model_cfg.transformer._class
+            loss_kwargs["transformer_subfolder"] = getattr(
+                model_cfg.transformer, "subfolder", "transformer"
             )
-            if cls is None and (
-                hasattr(item, "class_name") or (isinstance(item, dict) and "class_name" in item)
-            ):
-                cn = getattr(item, "class_name", None) or item["class_name"]
-                mod_path, cls_name = cn.rsplit(":", 1)
-                cls = getattr(importlib.import_module(mod_path), cls_name)
-
-            if cls is not None:
-                if isinstance(item, dict):
-                    nested = item.get("kwargs")
-                    if nested is not None:
-                        ns_d = nested if isinstance(nested, dict) else vars(nested)
-                        ikw = {k: v for k, v in ns_d.items() if not str(k).startswith("_")}
-                    else:
-                        ikw = {
-                            k: v
-                            for k, v in item.items()
-                            if k not in ("class_name", "scale", "name", "_class")
-                            and not str(k).startswith("_")
-                        }
-                else:
-                    ikw = ns_to_kwargs(getattr(item, "kwargs", None))
-                scale = (
-                    getattr(item, "scale", 1.0)
-                    if not isinstance(item, dict)
-                    else item.get("scale", 1.0)
-                )
-                name = (
-                    getattr(item, "name", None) if not isinstance(item, dict) else item.get("name")
-                )
-                name = name or cls.__name__
-                resolved.append((cls(**ikw), scale, name))
-        loss_kwargs["losses"] = resolved
-
-    return loss_class(**loss_kwargs)
+            loss_kwargs["revision"] = getattr(model_cfg, "revision", None)
+            loss_kwargs["variant"] = getattr(model_cfg, "variant", None)
+            loss_kwargs["device"] = accelerator.device
+            loss_kwargs["dtype"] = weight_dtype
+    return loss_cls(**loss_kwargs)
 
 
 def _prune_old_checkpoints(output_dir: str, limit: int) -> None:
@@ -128,7 +104,14 @@ def main(args=None):
     model_cfg = cfg.model
     lora_cfg = getattr(cfg, "lora", None)
     train_mode = getattr(cfg, "train_mode", "lora")
-    pretrained_path = model_cfg.pretrained_model_name_or_path
+    pipeline_cfg = getattr(cfg, "pipeline", None) or getattr(model_cfg, "pipeline", None)
+    if not pipeline_cfg:
+        raise ValueError("pipeline config is required")
+    pretrained_path = getattr(pipeline_cfg, "pretrained_model_name_or_path", None) or getattr(
+        model_cfg, "pretrained_model_name_or_path", None
+    )
+    if not pretrained_path:
+        raise ValueError("pipeline.pretrained_model_name_or_path is required")
 
     # --- Accelerator & MLflow ---
     logging_dir = Path(cfg.output_dir, cfg.logging_dir)
@@ -194,22 +177,23 @@ def main(args=None):
     elif mp == "bf16":
         weight_dtype = torch.bfloat16
 
-    # Load scheduler
-    sched_cls = model_cfg.scheduler._class
-    noise_scheduler = sched_cls.from_pretrained(
-        pretrained_path,
-        subfolder=model_cfg.scheduler.subfolder,
-        revision=model_cfg.revision,
-    )
-    noise_scheduler_copy = copy.deepcopy(noise_scheduler)
+    revision = getattr(model_cfg, "revision", None)
+    variant = getattr(model_cfg, "variant", None)
+    pipeline_cls = pipeline_cfg._class
+    components = _PIPELINE_COMPONENTS.get(pipeline_cls)
+    if not components:
+        raise ValueError(
+            f"No pipeline component registry for {pipeline_cls}. "
+            "Add vae/scheduler to model config or extend _PIPELINE_COMPONENTS."
+        )
 
-    # VAE: used only for batch-norm stats (latent normalization)
-    vae_cls = model_cfg.vae._class
+    # Load vae, scheduler from pipeline path (everything except DiT)
+    vae_cls, vae_subfolder = components["vae"]
     vae = vae_cls.from_pretrained(
         pretrained_path,
-        subfolder=model_cfg.vae.subfolder,
-        revision=model_cfg.revision,
-        variant=model_cfg.variant,
+        subfolder=vae_subfolder,
+        revision=revision,
+        variant=variant,
     )
     latents_bn_mean = vae.bn.running_mean.view(1, -1, 1, 1).to(accelerator.device)
     latents_bn_std = torch.sqrt(
@@ -217,15 +201,24 @@ def main(args=None):
     ).to(accelerator.device)
     del vae
 
-    # Transformer: load base weights, add LoRA adapter or enable full finetune
-    trans_cls = model_cfg.transformer._class
-    subfolder = model_cfg.transformer.subfolder
+    sched_cls, sched_subfolder = components["scheduler"]
+    noise_scheduler = sched_cls.from_pretrained(
+        pretrained_path,
+        subfolder=sched_subfolder,
+        revision=revision,
+    )
+    noise_scheduler_copy = copy.deepcopy(noise_scheduler)
+
+    # DiT: load separately
+    dit_cfg = getattr(model_cfg, "dit", model_cfg.transformer)
+    trans_cls = dit_cfg._class
+    subfolder = dit_cfg.subfolder
 
     transformer = trans_cls.from_pretrained(
         pretrained_path,
         subfolder=subfolder,
-        revision=model_cfg.revision,
-        variant=model_cfg.variant,
+        revision=revision,
+        variant=variant,
         torch_dtype=weight_dtype,
     )
     transformer.requires_grad_(False)
@@ -248,7 +241,7 @@ def main(args=None):
     elif train_mode == "full":
         transformer.requires_grad_(True)
 
-    pipeline_cls = model_cfg.pipeline._class if train_mode == "lora" else None
+    pipeline_cls = pipeline_cfg._class if train_mode == "lora" else None
     wrapper_cls = model_cfg.transformer_wrapper._class
     component_name = getattr(model_cfg.transformer_wrapper, "component_name", "transformer")
     transformer_wrapper = wrapper_cls(
@@ -265,27 +258,6 @@ def main(args=None):
     if train_cfg.gradient_checkpointing:
         transformer.enable_gradient_checkpointing()
 
-    # Load source (teacher) transformer for distillation if configured
-    source_transformer = None
-    distillation_cfg = getattr(cfg, "distillation", None)
-    if distillation_cfg and hasattr(distillation_cfg, "source_transformer"):
-        st_cfg = distillation_cfg.source_transformer
-        source_path = getattr(st_cfg, "pretrained_model_name_or_path", None)
-        if source_path:
-            st_cls = getattr(st_cfg, "_class", None) or model_cfg.transformer._class
-            st_subfolder = getattr(st_cfg, "subfolder", None) or subfolder
-            source_transformer = st_cls.from_pretrained(
-                source_path,
-                subfolder=st_subfolder,
-                revision=getattr(st_cfg, "revision", model_cfg.revision),
-                variant=getattr(st_cfg, "variant", model_cfg.variant),
-                torch_dtype=weight_dtype,
-            )
-            source_transformer.requires_grad_(False)
-            source_transformer.eval()
-            source_transformer.to(device=accelerator.device, dtype=weight_dtype)
-            logger.info("Distillation: loaded source transformer from %s", source_path)
-
     os.makedirs(cfg.output_dir, exist_ok=True)
     if config_path and accelerator.is_local_main_process:
         dest = Path(cfg.output_dir) / "config.yaml"
@@ -297,17 +269,10 @@ def main(args=None):
         m = accelerator.unwrap_model(m)
         return m._orig_mod if is_compiled_module(m) else m
 
-    transformer_cls = type(transformer)
     is_fsdp = getattr(accelerator.state, "fsdp_plugin", None) is not None
-
-    save_hook = transformer_wrapper.get_save_hook(
-        accelerator=accelerator,
-        transformer_cls=transformer_cls,
-        is_fsdp=is_fsdp,
-    )
+    save_hook = transformer_wrapper.get_save_hook(accelerator=accelerator, is_fsdp=is_fsdp)
     load_hook = transformer_wrapper.get_load_hook(
         accelerator=accelerator,
-        transformer_cls=transformer_cls,
         is_fsdp=is_fsdp,
         mixed_precision=mp,
     )
@@ -348,7 +313,7 @@ def main(args=None):
 
     collate_fn = cfg.collate._fn if hasattr(cfg.collate, "_fn") else None
     if collate_fn is None:
-        from ..data.precomputed_sstk import collate_precomputed
+        from ..data.precomputed_sstk_dataset import collate_precomputed
 
         collate_fn = collate_precomputed
 
@@ -405,30 +370,7 @@ def main(args=None):
 
     # --- Loss & validation ---
     loss_cfg = cfg.loss
-    loss_fn = _build_loss_fn(cfg)
-
-    # Distillation config and loss must match (both enabled or both disabled)
-    distillation_enabled = (
-        distillation_cfg is not None
-        and hasattr(distillation_cfg, "source_transformer")
-        and getattr(
-            getattr(distillation_cfg, "source_transformer", None),
-            "pretrained_model_name_or_path",
-            None,
-        )
-    )
-    uses_distillation = _loss_uses_distillation(loss_fn)
-    if distillation_enabled and not uses_distillation:
-        raise ValueError(
-            "Distillation is enabled (distillation.source_transformer configured) "
-            "but loss does not use DistillationLoss. Add DistillationLoss to your "
-            "loss config (e.g. use MetaLoss with MSELoss + DistillationLoss)."
-        )
-    if uses_distillation and not distillation_enabled:
-        raise ValueError(
-            "Loss uses DistillationLoss but distillation is not enabled. "
-            "Add distillation.source_transformer with pretrained_model_name_or_path."
-        )
+    loss_fn = _build_loss_fn(cfg, model_cfg=model_cfg, accelerator=accelerator, weight_dtype=weight_dtype)
     total_bs = (
         train_cfg.batch_size * accelerator.num_processes * train_cfg.gradient_accumulation_steps
     )
@@ -475,7 +417,7 @@ def main(args=None):
             }
 
             with accelerator.accumulate([transformer]):
-                result = training_step_precomputed(
+                loss, loss_breakdown = training_step_precomputed(
                     batch=batch,
                     transformer=transformer,
                     latents_bn_mean=latents_bn_mean,
@@ -488,13 +430,8 @@ def main(args=None):
                     guidance_scale=train_cfg.guidance_scale,
                     accelerator=accelerator,
                     loss_fn=loss_fn,
-                    source_transformer=source_transformer,
+                    step=global_step,
                 )
-                if isinstance(result, tuple):
-                    loss, loss_breakdown = result
-                else:
-                    loss = result
-                    loss_breakdown = {}
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
                     accelerator.clip_grad_norm_(
@@ -526,7 +463,7 @@ def main(args=None):
                     and global_step % getattr(val_cfg, "steps", 500) == 0
                 ):
                     run_validation(
-                        pipeline_cls=model_cfg.pipeline._class,
+                        pipeline_cls=pipeline_cfg._class,
                         transformer=_unwrap(transformer),
                         validation_prompt=val_cfg.prompt,
                         accelerator=accelerator,
