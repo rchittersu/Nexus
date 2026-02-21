@@ -38,8 +38,6 @@ def run_validation(
     resolution: int = 512,
     weight_dtype: torch.dtype = torch.float16,
     pretrained_path: str | None = None,
-    revision: str | None = None,
-    variant: str | None = None,
 ) -> None:
     """
     Build a pipeline with the trained transformer, run inference, and log images
@@ -48,8 +46,6 @@ def run_validation(
     pipeline = pipeline_cls.from_pretrained(
         pretrained_path,
         transformer=transformer,
-        revision=revision,
-        variant=variant,
         torch_dtype=weight_dtype,
     )
     pipeline = pipeline.to(dtype=weight_dtype)

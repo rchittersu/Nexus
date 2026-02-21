@@ -444,8 +444,6 @@ def main(args=None):
                         resolution=getattr(val_cfg, "resolution", 512),
                         weight_dtype=weight_dtype,
                         pretrained_path=pretrained_path,
-                        revision=model_cfg.revision,
-                        variant=model_cfg.variant,
                     )
 
                 if (
