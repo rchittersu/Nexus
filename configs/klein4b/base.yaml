@@ -1,6 +1,8 @@
 # Base Flux2 Klein 4B — pipeline and latent/text embed dims only.
 # Child configs inherit; latent_channels and text_embed_hidden are injected into dataset.kwargs.
 
+mixed_precision: bf16
+
 pipeline:
   class_name: diffusers:Flux2KleinPipeline
   pretrained_model_name_or_path: black-forest-labs/FLUX.2-klein-base-4B

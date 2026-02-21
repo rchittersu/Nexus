@@ -71,7 +71,6 @@ seed: null
 
 allow_tf32: false
 report_to: mlflow
-mixed_precision: null
 
 mlflow:
   tracking_uri: null

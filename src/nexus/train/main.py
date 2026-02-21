@@ -5,8 +5,8 @@ Config-driven via YAML. Entry point for LoRA or full fine-tuning of Flux.2
 transformers on precomputed VAE latents and text embeddings.
 
 Usage:
-    accelerate launch -m nexus.train.main --config configs/klein4b/run1.yaml
-    accelerate launch -m nexus.train.main --config configs/klein4b/run1.yaml \\
+    accelerate launch -m nexus.train --config configs/klein4b/run1.yaml
+    accelerate launch -m nexus.train --config configs/klein4b/run1.yaml \\
         --precomputed_data_dir /path/to/mds --output_dir ./out
 """
 

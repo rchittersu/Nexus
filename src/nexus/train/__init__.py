@@ -5,6 +5,12 @@ Training: config-driven Flux.2 Klein on precomputed SSTK MDS data.
     main()  # Uses configs/klein4b/run1.yaml, MDS from precompute.py
 """
 
-from .main import main
-
 __all__ = ["main"]
+
+
+def __getattr__(name: str):
+    if name == "main":
+        from .main import main
+
+        return main
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
