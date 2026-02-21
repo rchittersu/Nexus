@@ -9,11 +9,7 @@ second half = class. Loss splits accordingly.
 import torch
 from streaming import StreamingDataset
 
-from .precomputed_sstk_dataset import (
-    _bytes_to_latent,
-    _bytes_to_text_embeds,
-    collate_precomputed,
-)
+from .precomputed_sstk_dataset import _bytes_to_latent, _bytes_to_text_embeds
 
 
 def _decode_sample(
@@ -121,7 +117,12 @@ class PrecomputedDreamBoothDataset(torch.utils.data.Dataset):
         inst_decoded = self._decode_one(inst_sample)
 
         if not self.with_prior_preservation:
-            return inst_decoded
+            return {
+                "latents": inst_decoded["latents"].unsqueeze(0),
+                "text_embeds": inst_decoded["text_embeds"].unsqueeze(0),
+                "text_ids": inst_decoded["text_ids"].unsqueeze(0),
+                "caption": inst_decoded["caption"],
+            }
 
         class_idx = index % len(self.class_ds)
         class_sample = self.class_ds[class_idx]
@@ -136,23 +137,13 @@ class PrecomputedDreamBoothDataset(torch.utils.data.Dataset):
 
 
 def collate_precomputed_dreambooth(batch: list[dict]) -> dict:
-    """Collate DreamBooth batch: each element is (instance, class) pair.
-    First half of batch = instance, second half = class."""
+    """Collate DreamBooth batch. Dataset always yields (1,C,H,W) or (2,C,H,W); just concat."""
     if not batch:
         return {}
-    first = batch[0]
-    if "latents" in first and first["latents"].dim() == 3:
-        # Paired format: (2, C, H, W) per sample; concat instance then class
-        inst_latents = torch.stack([b["latents"][0] for b in batch])
-        class_latents = torch.stack([b["latents"][1] for b in batch])
-        inst_embeds = torch.stack([b["text_embeds"][0] for b in batch])
-        class_embeds = torch.stack([b["text_embeds"][1] for b in batch])
-        inst_ids = torch.stack([b["text_ids"][0] for b in batch])
-        class_ids = torch.stack([b["text_ids"][1] for b in batch])
-        return {
-            "latents": torch.cat([inst_latents, class_latents], dim=0),
-            "text_embeds": torch.cat([inst_embeds, class_embeds], dim=0),
-            "text_ids": torch.cat([inst_ids, class_ids], dim=0),
-            "captions": [b["caption"] for b in batch],
-        }
-    return collate_precomputed(batch)
+    n_per = batch[0]["latents"].shape[0]
+    return {
+        "latents": torch.cat([b["latents"] for b in batch], dim=0),
+        "text_embeds": torch.cat([b["text_embeds"] for b in batch], dim=0),
+        "text_ids": torch.cat([b["text_ids"] for b in batch], dim=0),
+        "captions": [b["caption"] for b in batch for _ in range(n_per)],
+    }

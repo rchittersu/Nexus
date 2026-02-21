@@ -10,6 +10,8 @@ Usage:
         --precomputed_data_dir /path/to/mds --output_dir ./out
 """
 
+import setuptools  # noqa: F401 - load before deps to avoid distutils deprecation warning
+
 import copy
 import logging
 import math
@@ -98,6 +100,12 @@ def main(args=None):
         project_config=proj_config,
         kwargs_handlers=[ddp_kwargs],
     )
+
+    # Set CUDA device before any dist.barrier() (e.g. from StreamingDataset init).
+    # Avoids "using gpu 0 to perform barrier as devices used by this process are currently unknown".
+    if torch.cuda.is_available():
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        torch.cuda.set_device(local_rank)
 
     if torch.backends.mps.is_available():
         accelerator.native_amp = False
