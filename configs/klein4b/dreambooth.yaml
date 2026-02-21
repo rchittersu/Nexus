@@ -29,7 +29,7 @@ lora:
   target_modules: ["to_k", "to_q", "to_v", "to_out.0"]
 
 train:
-  batch_size: 1
+  batch_size: 5
   max_steps: 2000
   gradient_accumulation_steps: 1
   gradient_checkpointing: true
@@ -60,7 +60,7 @@ optimizer:
 max_grad_norm: 1.0
 
 validation:
-  steps: 500
+  steps: 100
   prompt: "A photo of sks dog in a bucket"
   resolution: 512
   num_images: 4
