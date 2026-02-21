@@ -444,6 +444,8 @@ def main(args=None):
                         resolution=getattr(val_cfg, "resolution", 512),
                         weight_dtype=weight_dtype,
                         pretrained_path=pretrained_path,
+                        inference_steps=getattr(val_cfg, "inference_steps", 4),
+                        guidance_scale=getattr(val_cfg, "guidance_scale", 1.0),
                     )
 
                 if (

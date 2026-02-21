@@ -9,6 +9,7 @@ from typing import Any
 import numpy as np
 import torch
 from diffusers.training_utils import free_memory
+from tqdm.auto import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,8 @@ def run_validation(
     resolution: int = 512,
     weight_dtype: torch.dtype = torch.float16,
     pretrained_path: str | None = None,
+    inference_steps: int = 4,
+    guidance_scale: float = 1.0,
 ) -> None:
     """
     Build a pipeline with the trained transformer, run inference, and log images
@@ -57,13 +60,15 @@ def run_validation(
     )
 
     images = []
-    for _ in range(num_images):
+    for _ in tqdm(range(num_images), desc="Validation images", leave=False):
         with torch.autocast(device_type=accelerator.device.type, dtype=weight_dtype):
             out = pipeline(
                 prompt=validation_prompt,
                 height=resolution,
                 width=resolution,
                 generator=generator,
+                num_inference_steps=inference_steps,
+                guidance_scale=guidance_scale,
             )
         images.append(out.images[0])
 
