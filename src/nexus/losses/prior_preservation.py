@@ -38,8 +38,8 @@ class FlowMatchingWithPriorPreservation:
 
         logs = {
             "loss": total.detach().item(),
-            "loss/flow": total.detach().item(),
-            "loss/instance": instance_loss.detach().item(),
-            "loss/prior": prior_loss.detach().item(),
+            "loss_flow": total.detach().item(),
+            "loss_instance": instance_loss.detach().item(),
+            "loss_prior": prior_loss.detach().item(),
         }
         return total, logs

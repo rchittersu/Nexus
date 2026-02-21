@@ -64,7 +64,7 @@ class TestFlowMatchingLoss:
         assert total.dim() == 0
         assert total.item() >= 0
         assert "loss" in logs
-        assert "loss/flow" in logs
+        assert "loss_flow" in logs
 
     def test_perfect_pred_zero_loss(self):
         ctx, _ = _make_ctx(has_model_output=False)
@@ -92,9 +92,9 @@ class TestFlowMatchingWithPriorPreservation:
         loss_fn = FlowMatchingWithPriorPreservation(base="mse", weight=1.0)
         total, logs = loss_fn(ctx)
         assert total.dim() == 0
-        assert "loss/instance" in logs
-        assert "loss/prior" in logs
-        assert "loss/flow" in logs
+        assert "loss_instance" in logs
+        assert "loss_prior" in logs
+        assert "loss_flow" in logs
         assert "loss" in logs
 
     def test_odd_batch_raises(self):
@@ -112,7 +112,7 @@ class TestDistillationLoss:
         total, logs = loss_fn(ctx)
         assert total.dim() == 0
         assert "loss" in logs
-        assert "loss/flow" in logs
+        assert "loss_flow" in logs
 
 
 class TestBuildLossFn:

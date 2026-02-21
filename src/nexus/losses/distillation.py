@@ -142,11 +142,11 @@ class DistillationLoss:
             total = self.flow_weight * flow_loss + self.distillation_weight * distill_loss
             logs = {
                 "loss": total.detach().item(),
-                "loss/flow": flow_loss.detach().item(),
-                "loss/distillation": distill_loss.detach().item(),
+                "loss_flow": flow_loss.detach().item(),
+                "loss_distillation": distill_loss.detach().item(),
             }
         else:
             total = flow_loss
-            logs = {"loss": total.detach().item(), "loss/flow": flow_loss.detach().item()}
+            logs = {"loss": total.detach().item(), "loss_flow": flow_loss.detach().item()}
 
         return total, logs

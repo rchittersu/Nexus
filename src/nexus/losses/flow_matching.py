@@ -68,4 +68,4 @@ class FlowMatchingLoss:
         target = ctx.noise - ctx.model_input
         w = ctx.weighting
         total = self._base_loss(pred, target, w)
-        return total, {"loss": total.detach().item(), "loss/flow": total.detach().item()}
+        return total, {"loss": total.detach().item(), "loss_flow": total.detach().item()}

@@ -420,7 +420,8 @@ def main(args=None):
                     "lr": lr_scheduler.get_last_lr()[0],
                 }
                 for k, v in loss_breakdown.items():
-                    logs[f"loss/{k}"] = v
+                    if k != "loss":
+                        logs[k] = v
                 progress_bar.set_postfix(**logs)
                 accelerator.log(logs, step=global_step)
 
