@@ -23,7 +23,7 @@ cd datasets/prepare/sstk && ./run.sh all
 accelerate launch -m nexus.train.main \
   --config configs/klein4b/t2i_finetune.yaml \
   --precomputed_data_dir /path/to/mds_latents \
-  --output_dir ./runs/exp1
+  --output_dir my-run   # overrides mlflow.run_name
 ```
 
 Or use `./scripts/train.sh` as a wrapper.
@@ -45,7 +45,6 @@ Training does not run VAE or text encoder; that happens once during precompute.
 Configs extend a base and override sections:
 
 ```yaml
-# run2.yaml
 extends: base.yaml
 
 train:
@@ -57,10 +56,16 @@ validation:
   prompt: "a photo of a sks dog"
   steps: 250
 
-output_dir: runs/run2
+mlflow:
+  experiment_name: klein4b-t2i-finetune
+  run_name: my-run
 ```
 
 **Main sections:** `pipeline`, `model.dit`, `dataset`, `train`, `train_mode`, `lora`, `loss`, `optimizer`, `validation`, `mlflow`
+
+**mlflow required:** `experiment_name`, `run_name`. Output path: `log_root/experiments/{experiment_name}-{run_name}`.
+
+**validation** (inherited from base): `num_images: 2`, `inference_steps: 4`, `guidance_scale: 1.0`. Override `steps`, `prompt`, `resolution` per config.
 
 ---
 
@@ -70,7 +75,7 @@ output_dir: runs/run2
 |-----|--------|
 | `--config` | Required. YAML path. |
 | `--precomputed_data_dir` | Overrides `dataset.kwargs.local` |
-| `--output_dir` | Overrides `output_dir` |
+| `--output_dir` | Overrides `mlflow.run_name` (run identifier in output path) |
 | `--max_train_steps` | Overrides `train.max_steps` |
 | `--resume_from_checkpoint` | Path or `latest` |
 
@@ -129,16 +134,24 @@ loss:
 
 ## Output
 
+**Project layout** (default `log_root: logs`):
+
 ```
-{output_dir}/
-├── config.yaml
-├── mlruns/           # MLflow (report_to: mlflow)
-├── logs/
-├── checkpoint-{step}/
-└── transformer_lora.safetensors  # or transformer.safetensors (full)
+logs/
+├── mlruns/                                    # MLflow tracking store (project-level)
+└── experiments/
+    └── {experiment_name}-{run_name}/          # e.g. klein4b-t2i-finetune-batch4-lora4
+        ├── config.yaml
+        ├── checkpoint-{step}/
+        ├── validation_images/
+        └── transformer_lora.safetensors      # final save
 ```
 
-`mlflow ui --backend-store-uri ./runs/exp1/mlruns`
+**View MLflow:**
+
+```bash
+mlflow ui --backend-store-uri ./logs/mlruns --host 0.0.0.0
+```
 
 ---
 
@@ -154,7 +167,9 @@ loss:
 ## Project layout
 
 ```
-configs/klein4b/     # base, t2i_finetune, t2i_dreambooth, t2i_distillation
+configs/
+├── klein4b/         # base, t2i_finetune, t2i_dreambooth, t2i_distillation
+└── klein4b-base/   # same structure, FLUX.2-klein-base-4B model
 scripts/train.sh     # wrapper for accelerate launch
 src/nexus/
 ├── train/           # main, config, train_loop, losses, validation
@@ -180,6 +195,7 @@ datasets/
 | Issue | Fix |
 |-------|-----|
 | `dataset.kwargs.local is required` | Set in config or pass `--precomputed_data_dir` |
+| `mlflow config required` | Config must have `mlflow.experiment_name` and `mlflow.run_name` |
 | MPS + bf16 | Use `fp16` or `null` (bf16 not supported on Apple Silicon) |
 | OOM | Lower batch_size, enable gradient_checkpointing, use LoRA |
 

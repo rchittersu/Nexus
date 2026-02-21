@@ -63,10 +63,7 @@ validation:
   steps: 100
   prompt: "A photo of sks dog in a bucket"
   resolution: 512
-  num_images: 4
   seed: 42
-  inference_steps: 4
-  guidance_scale: 1
 
 checkpointing_steps: 500
 resume_from_checkpoint: null

@@ -57,7 +57,6 @@ max_grad_norm: 1.0
 validation:
   steps: 500
   prompt: null
-  num_images: 4
   seed: 42
 
 checkpointing_steps: 500
