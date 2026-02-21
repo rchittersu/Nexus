@@ -9,4 +9,5 @@
 set -e
 CONFIG="${1:?Usage: $0 <config.yaml> [--output_dir ...] [--precomputed_data_dir ...] ...}"
 shift
+export PYTHONWARNINGS="ignore:distutils:DeprecationWarning,ignore:distutils:UserWarning"
 accelerate launch -m nexus.train.main --config "$CONFIG" "$@"

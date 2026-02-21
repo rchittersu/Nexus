@@ -10,8 +10,6 @@ Usage:
         --precomputed_data_dir /path/to/mds --output_dir ./out
 """
 
-import setuptools  # noqa: F401 - load before deps to avoid distutils deprecation warning
-
 import copy
 import logging
 import math
