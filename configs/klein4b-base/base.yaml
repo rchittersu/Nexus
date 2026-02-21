@@ -1,6 +1,6 @@
 # Base Flux2 Klein 4B — FLUX.2-klein-base-4B (undistilled foundation model).
 # Child configs inherit; latent_channels and text_embed_hidden injected into dataset.kwargs.
-# log_root: project-level logs dir; mlruns at log_root/mlruns, runs at log_root/experiments/{exp}-{run}
+# log_root: project-level logs dir; mlruns at log_root/mlruns, runs at log_root/experiments/{user}/{exp}-{run}
 
 log_root: logs
 mixed_precision: bf16
@@ -16,3 +16,8 @@ validation:
   num_images: 2
   inference_steps: 4
   guidance_scale: 1.0
+
+report_to: mlflow
+mlflow:
+  tracking_uri: null
+  user: null

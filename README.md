@@ -59,11 +59,12 @@ validation:
 mlflow:
   experiment_name: klein4b-t2i-finetune
   run_name: my-run
+  user: null
 ```
 
 **Main sections:** `pipeline`, `model.dit`, `dataset`, `train`, `train_mode`, `lora`, `loss`, `optimizer`, `validation`, `mlflow`
 
-**mlflow required:** `experiment_name`, `run_name`. Output path: `log_root/experiments/{experiment_name}-{run_name}`.
+**mlflow required:** `experiment_name`, `run_name`. Output path: `log_root/experiments/{user}/{experiment_name}-{run_name}` (user from `mlflow.user`, defaults to `default` if null).
 
 **validation** (inherited from base): `num_images: 2`, `inference_steps: 4`, `guidance_scale: 1.0`. Override `steps`, `prompt`, `resolution` per config.
 
@@ -140,7 +141,8 @@ loss:
 logs/
 ├── mlruns/                                    # MLflow tracking store (project-level)
 └── experiments/
-    └── {experiment_name}-{run_name}/          # e.g. klein4b-t2i-finetune-batch4-lora4
+    └── {user}/                                 # from mlflow.user, or "default"
+        └── {experiment_name}-{run_name}/       # e.g. klein4b-t2i-finetune-batch4-lora4
         ├── config.yaml
         ├── checkpoint-{step}/
         ├── validation_images/

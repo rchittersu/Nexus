@@ -39,7 +39,7 @@ from nexus.utils.checkpoint_utils import (
     prune_old_checkpoints,
     save_final_klein,
 )
-from nexus.utils.log_utils import _require_mlflow, get_output_dir, setup_mlflow_log_with
+from nexus.utils.log_utils import init_trackers, log_dataset_input, setup_tracking
 from nexus.utils.train_utils import unwrap_model
 
 from .config import ns_to_kwargs, parse_args
@@ -89,17 +89,10 @@ def main(args=None):
         raise ValueError("pipeline.pretrained_model_name_or_path is required")
 
     # --- Accelerator & trackers ---
-    _require_mlflow(cfg)
-    mlflow_cfg = cfg.mlflow
-    log_root = Path(getattr(cfg, "log_root", "logs")).resolve()
-    experiment_name = mlflow_cfg.experiment_name
-    run_name = mlflow_cfg.run_name
-    output_dir = str(get_output_dir(log_root, experiment_name, run_name))
-    cfg.output_dir = output_dir
+    output_dir, log_with = setup_tracking(cfg)
 
     proj_config = ProjectConfiguration(project_dir=output_dir, logging_dir=output_dir)
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
-    log_with = setup_mlflow_log_with(log_root, mlflow_cfg)
 
     accelerator = Accelerator(
         gradient_accumulation_steps=train_cfg.gradient_accumulation_steps,
@@ -339,15 +332,14 @@ def main(args=None):
             logger.info("  (max_steps=%s set)", max_steps_cfg)
 
     if accelerator.is_main_process:
-        config_dict = {}
-        for k, v in vars(cfg).items():
-            if not k.startswith("_"):
-                try:
-                    config_dict[k] = str(v)
-                except Exception:
-                    config_dict[k] = repr(v)
-        exp_name = cfg.mlflow.experiment_name
-        accelerator.init_trackers(exp_name, config=config_dict)
+        init_trackers(accelerator, cfg)
+        log_dataset_input(
+            class_name=getattr(cfg.dataset, "class_name", None),
+            kwargs=ns_to_kwargs(cfg.dataset.kwargs) if hasattr(cfg.dataset, "kwargs") and cfg.dataset.kwargs else None,
+            name=getattr(cfg.dataset, "name", None),
+            source_path=ds_kwargs.get("local"),
+            context="training",
+        )
 
     # --- Loss & validation ---
     loss_cfg = cfg.loss

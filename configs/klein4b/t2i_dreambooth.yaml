@@ -70,9 +70,8 @@ resume_from_checkpoint: null
 seed: null
 
 allow_tf32: false
-report_to: mlflow
 
 mlflow:
-  tracking_uri: null
   experiment_name: klein4b-t2i-dreambooth
   run_name: batch5-lora4
+  user: null

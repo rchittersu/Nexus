@@ -67,9 +67,8 @@ resume_from_checkpoint: null
 seed: null
 
 allow_tf32: false
-report_to: mlflow
 
 mlflow:
-  tracking_uri: null
   experiment_name: klein4b-base-t2i-distillation
   run_name: batch4-lora4
+  user: null
