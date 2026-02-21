@@ -53,7 +53,10 @@ train:
   learning_rate: 2.0e-4
 
 validation:
-  prompt: "a photo of a sks dog"
+  entries:
+    - prompt: "a photo of a sks dog"
+      source: null
+      num_images: 2
   steps: 250
 
 mlflow:
@@ -66,7 +69,7 @@ mlflow:
 
 **mlflow required:** `experiment_name`, `run_name`. Output path: `log_root/experiments/{user}/{experiment_name}-{run_name}` (user from `mlflow.user`, defaults to `default` if null).
 
-**validation** (inherited from base): `num_images: 2`, `inference_steps: 4`, `guidance_scale: 1.0`. Override `steps`, `prompt`, `resolution` per config.
+**validation** (inherited from base): `inference_steps: 4`, `guidance_scale: 1.0`. Override `steps`, `entries`, `resolution` per config. Each entry: `{prompt, source, num_images}` (source: null for t2i, path for img2img).
 
 ---
 
@@ -87,7 +90,7 @@ mlflow:
 1. **Prepare** — images + captions → MDS
 2. **Precompute** — MDS → VAE latents + text embeddings → MDS with `latents_512`, `text_embeds`
 
-**SSTK:**
+**Standard (MDS):**
 ```bash
 cd datasets/prepare/sstk
 ./run.sh prepare    # images_txt + captions → MDS

@@ -6,8 +6,6 @@ Entries format: list of {prompt, source, num_images}.
   - prompt: text prompt
   - source: image path for img2img, null for t2i
   - num_images: images to generate per entry (default 1)
-
-Legacy: validation_prompt (str) expands to one entry with source=null.
 """
 
 import logging
@@ -44,16 +42,14 @@ def run_validation(
     guidance_scale: float = 1.0,
     seed: int | None = 42,
     *,
-    validation_prompt: str | None = None,
     validation_entries: list[dict] | None = None,
 ) -> None:
     """
     Build a pipeline with the trained transformer, run inference, and log images to MLflow.
 
-    Entries: list of {prompt, source, num_images}. source=null for t2i, path for img2img.
-    num_images per entry (default 1). Legacy: validation_prompt -> one entry.
+    validation_entries: list of {prompt, source, num_images}. source=null for t2i, path for img2img.
+    num_images per entry (default 1).
     """
-    # Normalize to entries: [(prompt, source_image, num_images), ...]
     normalized: list[tuple[str, Image.Image | None, int]] = []
     if validation_entries:
         for e in validation_entries:
@@ -61,11 +57,9 @@ def run_validation(
             src_path = e.get("source") or e.get("image")  # support both keys
             n = int(e.get("num_images", 1))
             normalized.append((prompt, _load_image_if_path(src_path), n))
-    elif validation_prompt:
-        normalized = [(validation_prompt, None, 1)]
 
     if not normalized:
-        logger.warning("Validation skipped: no prompt or entries")
+        logger.warning("Validation skipped: no entries")
         return
 
     pipeline = pipeline_cls.from_pretrained(

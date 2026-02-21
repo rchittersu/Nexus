@@ -9,7 +9,7 @@ second half = class. Loss splits accordingly.
 import torch
 from streaming import StreamingDataset
 
-from .precomputed_sstk_dataset import _bytes_to_latent, _bytes_to_text_embeds
+from .precomputed_mds_dataset import _bytes_to_latent, _bytes_to_text_embeds
 
 
 def _decode_sample(

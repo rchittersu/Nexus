@@ -1,5 +1,5 @@
 """
-Training: config-driven Flux.2 Klein on precomputed SSTK MDS data.
+Training: config-driven Flux.2 Klein on precomputed MDS data.
 
   from nexus.train import main
     main()  # Uses configs/klein4b/t2i_finetune.yaml, MDS from precompute.py

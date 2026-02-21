@@ -70,12 +70,12 @@ class TestLogDatasetInput:
         mlflow.set_experiment("test-dataset-no-path")
         with mlflow.start_run():
             log_dataset_input(
-                class_name="nexus.data.precomputed_sstk_dataset:PrecomputedSSTKDataset",
+                class_name="nexus.data.precomputed_mds_dataset:PrecomputedMDSDataset",
                 kwargs={"resolution": 512, "shuffle": True},
                 context="training",
             )
             run = mlflow.get_run(mlflow.active_run().info.run_id)
-            assert run.data.params["dataset.class"] == "nexus.data.precomputed_sstk_dataset:PrecomputedSSTKDataset"
+            assert run.data.params["dataset.class"] == "nexus.data.precomputed_mds_dataset:PrecomputedMDSDataset"
             assert "512" in run.data.params["dataset.kwargs"]
             assert len(run.inputs.dataset_inputs) == 0
 
@@ -90,7 +90,7 @@ class TestLogDatasetInput:
         data_dir.mkdir()
         with mlflow.start_run():
             log_dataset_input(
-                class_name="nexus.data.precomputed_sstk_dataset:PrecomputedSSTKDataset",
+                class_name="nexus.data.precomputed_mds_dataset:PrecomputedMDSDataset",
                 kwargs={"resolution": 512},
                 name="my-training-data",
                 source_path=str(data_dir),
@@ -100,7 +100,7 @@ class TestLogDatasetInput:
             inputs = run.inputs.dataset_inputs
             assert len(inputs) == 1
             assert inputs[0].dataset.name == "my-training-data"
-            assert run.data.params["dataset.class"] == "nexus.data.precomputed_sstk_dataset:PrecomputedSSTKDataset"
+            assert run.data.params["dataset.class"] == "nexus.data.precomputed_mds_dataset:PrecomputedMDSDataset"
 
     def test_uses_class_name_as_dataset_name_when_name_not_in_config(self, tmp_path):
         import mlflow
@@ -113,14 +113,14 @@ class TestLogDatasetInput:
         data_dir.mkdir()
         with mlflow.start_run():
             log_dataset_input(
-                class_name="nexus.data.precomputed_sstk_dataset:PrecomputedSSTKDataset",
+                class_name="nexus.data.precomputed_mds_dataset:PrecomputedMDSDataset",
                 source_path=str(data_dir),
                 context="training",
             )
             run = mlflow.get_run(mlflow.active_run().info.run_id)
             inputs = run.inputs.dataset_inputs
             assert len(inputs) == 1
-            assert inputs[0].dataset.name == "PrecomputedSSTKDataset"
+            assert inputs[0].dataset.name == "PrecomputedMDSDataset"
 
 
 class TestGetOutputDir:

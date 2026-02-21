@@ -1,15 +1,15 @@
-# Klein 4B base t2i fine-tune — SSTK training. latent_channels, text_embed_hidden from base.
+# Klein 4B base t2i fine-tune — precomputed MDS training. latent_channels, text_embed_hidden from base.
 extends: base.yaml
 
 dataset:
-  class_name: nexus.data.precomputed_sstk_dataset:PrecomputedSSTKDataset
+  class_name: nexus.data.precomputed_mds_dataset:PrecomputedMDSDataset
   kwargs:
     local: null
     resolution: 512
     shuffle: true
 
 collate:
-  class_name: nexus.data.precomputed_sstk_dataset:collate_precomputed
+  class_name: nexus.data.precomputed_mds_dataset:collate_precomputed
 
 model:
   dit:

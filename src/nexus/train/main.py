@@ -1,5 +1,5 @@
 """
-Flux.2 Klein training on precomputed SSTK MDS data.
+Flux.2 Klein training on precomputed MDS data.
 
 Config-driven via YAML. Entry point for LoRA or full fine-tuning of Flux.2
 transformers on precomputed VAE latents and text embeddings.
@@ -66,7 +66,7 @@ logger = get_logger(__name__)
 
 
 def main(args=None):
-    """Run Flux.2 Klein LoRA/full training on precomputed SSTK data."""
+    """Run Flux.2 Klein LoRA/full training on precomputed MDS data."""
     cfg = parse_args(args)
 
     # --- Config & logging ---
@@ -266,7 +266,7 @@ def main(args=None):
 
     collate_fn = cfg.collate._fn if hasattr(cfg.collate, "_fn") else None
     if collate_fn is None:
-        from ..data.precomputed_sstk_dataset import collate_precomputed
+        from ..data.precomputed_mds_dataset import collate_precomputed
 
         collate_fn = collate_precomputed
 
@@ -431,12 +431,11 @@ def main(args=None):
 
                 # Periodic validation: generate images and log to trackers
                 val_cfg = getattr(cfg, "validation", None)
-                has_val_prompt = val_cfg and getattr(val_cfg, "prompt", None)
-                has_val_entries = val_cfg and getattr(val_cfg, "entries", None)
+                val_entries = val_cfg and getattr(val_cfg, "entries", None)
                 if (
                     accelerator.is_main_process
                     and val_cfg
-                    and (has_val_prompt or has_val_entries)
+                    and val_entries
                     and global_step % getattr(val_cfg, "steps", 500) == 0
                 ):
                     run_validation(
@@ -451,8 +450,7 @@ def main(args=None):
                         inference_steps=getattr(val_cfg, "inference_steps", 4),
                         guidance_scale=getattr(val_cfg, "guidance_scale", 1.0),
                         seed=getattr(val_cfg, "seed", 42),
-                        validation_prompt=getattr(val_cfg, "prompt", None),
-                        validation_entries=getattr(val_cfg, "entries", None),
+                        validation_entries=val_entries,
                     )
 
                 if (

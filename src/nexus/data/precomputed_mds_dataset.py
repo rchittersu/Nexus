@@ -1,5 +1,5 @@
 """
-Precomputed SSTK dataset: MDS shards with VAE latents and text embeddings.
+Precomputed MDS dataset: MDS shards with VAE latents and text embeddings.
 
 Produced by datasets/precompute.py. Schema: caption, latents_{resolution},
 text_embeds. Single resolution (default 512). text_ids generated from text_embeds
@@ -45,7 +45,7 @@ def _bytes_to_text_embeds(
     return torch.from_numpy(arr.reshape(seq_len, hidden_dim).astype(np.float32)).to(dtype)
 
 
-class PrecomputedSSTKDataset(StreamingDataset):
+class PrecomputedMDSDataset(StreamingDataset):
     """
     StreamingDataset for MDS shards with precomputed VAE latents and text embeddings.
 
