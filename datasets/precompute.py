@@ -47,7 +47,7 @@ def _datadir_to_streams(datadir: Union[List[str], str]) -> List[Stream]:
 def build_streaming_sstk_t2i_dataloader(
     datadir: Union[List[str], str],
     batch_size: int,
-    resize_sizes: Optional[List[int]] = None,
+    resolution: int = 512,
     drop_last: bool = False,
     shuffle: bool = True,
     num_workers: int = 0,
@@ -55,26 +55,21 @@ def build_streaming_sstk_t2i_dataloader(
     caption_key: str = "caption",
     clean_caption: bool = True,
 ) -> DataLoader:
-    assert resize_sizes is not None, "Must provide target resolution for image resizing"
-
     streams = _datadir_to_streams(datadir)
 
-    transforms_list = [
-        transforms.Compose([
-            transforms.Resize(
-                size,
-                interpolation=transforms.InterpolationMode.BICUBIC,
-            ),
-            transforms.CenterCrop(size),
-            transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-        ])
-        for size in resize_sizes
-    ]
+    transform = transforms.Compose([
+        transforms.Resize(
+            resolution,
+            interpolation=transforms.InterpolationMode.BICUBIC,
+        ),
+        transforms.CenterCrop(resolution),
+        transforms.ToTensor(),
+        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+    ])
 
     init_kwargs: dict = {
         "streams": streams,
-        "transforms_list": transforms_list,
+        "transforms_list": [transform],
         "batch_size": batch_size,
         "shuffle": shuffle,
         "image_key": image_key,
@@ -144,10 +139,10 @@ def parse_args() -> ArgumentParser:
         help="Workers. If None, one per prepare subfolder.",
     )
     parser.add_argument(
-        "--image_resolutions",
+        "--resolution",
         type=int,
-        nargs="+",
-        default=[512],
+        default=512,
+        help="Image resolution for resize and latent encoding.",
     )
     parser.add_argument("--save_images", default=False, action="store_true")
     parser.add_argument(
@@ -186,8 +181,6 @@ def parse_args() -> ArgumentParser:
         with open(args.args_file) as f:
             data = json.load(f)
         args = Namespace(**data)
-    if isinstance(args.image_resolutions, int):
-        args.image_resolutions = [args.image_resolutions]
     return args
 
 
@@ -233,7 +226,7 @@ def _precompute_worker(task: Tuple[List[str], int, object]) -> None:
     dataloader = build_streaming_sstk_t2i_dataloader(
         datadir=subfolder_paths,
         batch_size=args.batch_size,
-        resize_sizes=args.image_resolutions,
+        resolution=args.resolution,
         drop_last=False,
         shuffle=False,
         num_workers=args.dataloader_workers,
@@ -252,8 +245,7 @@ def _precompute_worker(task: Tuple[List[str], int, object]) -> None:
 
     columns = {"caption": "str"}
     if args.vae:
-        for size in args.image_resolutions:
-            columns[f"latents_{size}"] = "bytes"
+        columns[f"latents_{args.resolution}"] = "bytes"
     if args.text_encoder:
         columns["text_embeds"] = "bytes"
     if args.save_images:
@@ -270,24 +262,20 @@ def _precompute_worker(task: Tuple[List[str], int, object]) -> None:
     )
 
     for batch in tqdm(dataloader, desc=f"Worker {worker_idx}", position=worker_idx):
-        images = [
-            torch.stack(batch[f"image_{idx}"]).to(device)
-            for idx in range(len(args.image_resolutions))
-        ]
-        batch_size = images[0].shape[0]
+        images = torch.stack(batch["image_0"]).to(device)
+        batch_size = images.shape[0]
 
         try:
             with torch.no_grad():
                 with torch.autocast(device_type="cuda", dtype=DATA_TYPES[args.model_dtype]):
                     latents_dict = {}
                     if args.vae:
-                        for idx, size in enumerate(args.image_resolutions):
-                            latent_dist = vae.encode(images[idx])
-                            assert isinstance(latent_dist, AutoencoderKLOutput)
-                            lat = latent_dist.latent_dist.sample().to(
-                                DATA_TYPES[args.save_dtype]
-                            )
-                            latents_dict[size] = lat.detach().cpu().numpy()
+                        latent_dist = vae.encode(images)
+                        assert isinstance(latent_dist, AutoencoderKLOutput)
+                        lat = latent_dist.latent_dist.sample().to(
+                            DATA_TYPES[args.save_dtype]
+                        )
+                        latents_dict[args.resolution] = lat.detach().cpu().numpy()
 
                     captions_to_encode = []
                     for i in range(batch_size):
@@ -324,8 +312,9 @@ def _precompute_worker(task: Tuple[List[str], int, object]) -> None:
                     if args.text_encoder:
                         mds_sample["text_embeds"] = prompt_embeds[i].tobytes()
                     if args.vae:
-                        for size in args.image_resolutions:
-                            mds_sample[f"latents_{size}"] = latents_dict[size][i].tobytes()
+                        mds_sample[f"latents_{args.resolution}"] = latents_dict[
+                            args.resolution
+                        ][i].tobytes()
                     if args.save_images:
                         mds_sample["image"] = batch["sample"][i][image_key]
                     writer.write(mds_sample)

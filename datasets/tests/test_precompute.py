@@ -46,7 +46,7 @@ class TestParseArgs:
             args = parse_args()
             assert args.savedir == ""
             assert args.num_proc is None
-            assert args.image_resolutions == [512]
+            assert args.resolution == 512
 
 
 class TestDatadirToStreams:
