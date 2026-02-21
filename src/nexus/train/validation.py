@@ -85,7 +85,7 @@ def run_validation(
             for i, img in enumerate(images):
                 mlflow.log_image(
                     np.asarray(img),
-                    artifact_file=f"validation/step_{step}_img_{i}.png",
+                    key=f"validation/img_{i}",
                     step=step,
                 )
 
