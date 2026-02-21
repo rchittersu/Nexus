@@ -54,9 +54,9 @@ class PrecomputedDreamBoothDataset(torch.utils.data.Dataset):
     """
     Dataset for DreamBooth training from precomputed instance and class MDS.
 
-    When with_prior_preservation=True, each __getitem__ returns both instance
-    and class sample (paired). First half of collated batch = instance,
-    second half = class.
+    Always returns instance_latents (+ instance_text_embeds, instance_text_ids).
+    When with_prior_preservation=True, also returns class_latents. Collate
+    merges when class_latents present: first half = instance, second half = class.
     """
 
     def __init__(
@@ -116,34 +116,47 @@ class PrecomputedDreamBoothDataset(torch.utils.data.Dataset):
         inst_sample = self.instance_ds[inst_idx]
         inst_decoded = self._decode_one(inst_sample)
 
-        if not self.with_prior_preservation:
-            return {
-                "latents": inst_decoded["latents"].unsqueeze(0),
-                "text_embeds": inst_decoded["text_embeds"].unsqueeze(0),
-                "text_ids": inst_decoded["text_ids"].unsqueeze(0),
-                "caption": inst_decoded["caption"],
-            }
-
-        class_idx = index % len(self.class_ds)
-        class_sample = self.class_ds[class_idx]
-        class_decoded = self._decode_one(class_sample)
-
-        return {
-            "latents": torch.stack([inst_decoded["latents"], class_decoded["latents"]]),
-            "text_embeds": torch.stack([inst_decoded["text_embeds"], class_decoded["text_embeds"]]),
-            "text_ids": torch.stack([inst_decoded["text_ids"], class_decoded["text_ids"]]),
+        out = {
+            "instance_latents": inst_decoded["latents"],
+            "instance_text_embeds": inst_decoded["text_embeds"],
+            "instance_text_ids": inst_decoded["text_ids"],
             "caption": inst_decoded["caption"],
         }
+        if self.with_prior_preservation:
+            class_idx = index % len(self.class_ds)
+            class_sample = self.class_ds[class_idx]
+            class_decoded = self._decode_one(class_sample)
+            out["class_latents"] = class_decoded["latents"]
+            out["class_text_embeds"] = class_decoded["text_embeds"]
+            out["class_text_ids"] = class_decoded["text_ids"]
+        return out
 
 
 def collate_precomputed_dreambooth(batch: list[dict]) -> dict:
-    """Collate DreamBooth batch. Dataset always yields (1,C,H,W) or (2,C,H,W); just concat."""
+    """Collate DreamBooth batch. Instance always present; if class_latents in batch, merge."""
     if not batch:
         return {}
-    n_per = batch[0]["latents"].shape[0]
+    instance_latents = torch.stack([b["instance_latents"] for b in batch])
+    instance_text_embeds = torch.stack([b["instance_text_embeds"] for b in batch])
+    instance_text_ids = torch.stack([b["instance_text_ids"] for b in batch])
+    captions = [b["caption"] for b in batch]
+
+    if "class_latents" in batch[0]:
+        class_latents = torch.stack([b["class_latents"] for b in batch])
+        class_text_embeds = torch.stack([b["class_text_embeds"] for b in batch])
+        class_text_ids = torch.stack([b["class_text_ids"] for b in batch])
+        latents = torch.cat([instance_latents, class_latents], dim=0)
+        text_embeds = torch.cat([instance_text_embeds, class_text_embeds], dim=0)
+        text_ids = torch.cat([instance_text_ids, class_text_ids], dim=0)
+        captions = captions * 2  # instance + class per sample
+    else:
+        latents = instance_latents
+        text_embeds = instance_text_embeds
+        text_ids = instance_text_ids
+
     return {
-        "latents": torch.cat([b["latents"] for b in batch], dim=0),
-        "text_embeds": torch.cat([b["text_embeds"] for b in batch], dim=0),
-        "text_ids": torch.cat([b["text_ids"] for b in batch], dim=0),
-        "captions": [b["caption"] for b in batch for _ in range(n_per)],
+        "latents": latents,
+        "text_embeds": text_embeds,
+        "text_ids": text_ids,
+        "captions": captions,
     }

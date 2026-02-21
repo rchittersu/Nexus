@@ -3,6 +3,7 @@ Logging utilities: MLflow setup and tracker configuration.
 """
 
 import os
+from datetime import datetime
 from pathlib import Path
 
 
@@ -41,3 +42,23 @@ def get_experiment_name(report_to, mlflow_cfg=None) -> str:
     if uses_mlflow(report_to) and mlflow_cfg:
         return getattr(mlflow_cfg, "experiment_name", "nexus-flux2")
     return "nexus-flux2"
+
+
+def log_validation_images_to_mlflow(images: list, step: int, output_dir: str | Path) -> None:
+    """
+    Save validation images under output_dir/validation_images/{run_id}/ and log to MLflow.
+    Uses MLflow run_id when available so runs do not overwrite each other.
+    """
+    import mlflow
+
+    run_id = None
+    if mlflow.active_run():
+        run_id = mlflow.active_run().info.run_id
+    if not run_id:
+        run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    val_dir = Path(output_dir) / "validation_images" / run_id
+    val_dir.mkdir(parents=True, exist_ok=True)
+    for i, img in enumerate(images):
+        path = val_dir / f"validation_step{step}_img{i}.png"
+        img.save(path)
+        mlflow.log_artifact(str(path), artifact_path="validation")

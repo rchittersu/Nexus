@@ -439,6 +439,7 @@ def main(args=None):
                         validation_prompt=val_cfg.prompt,
                         accelerator=accelerator,
                         step=global_step,
+                        output_dir=cfg.output_dir,
                         num_images=getattr(val_cfg, "num_images", 4),
                         seed=getattr(val_cfg, "seed", 42),
                         resolution=getattr(val_cfg, "resolution", 512),

@@ -4,9 +4,12 @@ images, and log to TensorBoard, WandB, or MLflow.
 """
 
 import logging
+from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+from nexus.utils.log_utils import log_validation_images_to_mlflow
 import torch
 from diffusers.training_utils import free_memory
 from tqdm.auto import tqdm
@@ -34,6 +37,7 @@ def run_validation(
     validation_prompt: str,
     accelerator: Any,
     step: int,
+    output_dir: str | Path,
     num_images: int = 4,
     seed: int | None = 42,
     resolution: int = 512,
@@ -87,12 +91,7 @@ def run_validation(
                 step=step,
             )
         if tracker.name == "mlflow" and MLFLOW_AVAILABLE:
-            for i, img in enumerate(images):
-                mlflow.log_image(
-                    np.asarray(img),
-                    key=f"validation/img_{i}",
-                    step=step,
-                )
+            log_validation_images_to_mlflow(images, step, output_dir)
 
     del pipeline
     free_memory()
