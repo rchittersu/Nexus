@@ -119,7 +119,7 @@ Config example:
 
 ```yaml
 loss:
-  class_name: nexus.train.losses:FlowMatchingLoss
+  class_name: nexus.losses:FlowMatchingLoss
   weighting_scheme: none
   kwargs:
     base: mse

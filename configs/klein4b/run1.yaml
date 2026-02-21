@@ -39,11 +39,10 @@ train:
   dataloader_num_workers: 0
 
 loss:
-  class_name: nexus.train.losses:FlowMatchingLoss
+  class_name: nexus.losses:FlowMatchingLoss
   weighting_scheme: none
   logit_mean: 0.0
   logit_std: 1.0
-  mode_scale: 1.29
   kwargs:
     base: mse
 

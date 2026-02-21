@@ -40,7 +40,7 @@ class TestLoadConfig:
         cfg_path = tmp_path / "minimal.yaml"
         cfg_path.write_text("""
 loss:
-  class_name: nexus.train.losses:FlowMatchingLoss
+  class_name: nexus.losses:FlowMatchingLoss
   kwargs:
     base: mse
 """)

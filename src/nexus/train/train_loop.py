@@ -14,7 +14,7 @@ from diffusers.training_utils import (
     compute_loss_weighting_for_sd3,
 )
 
-from .losses.context import LossContext
+from nexus.losses.context import LossContext
 
 
 def get_sigmas(
@@ -44,7 +44,6 @@ def training_step_precomputed(
     weighting_scheme: str,
     logit_mean: float,
     logit_std: float,
-    mode_scale: float,
     guidance_scale: float,
     accelerator: Any,
     loss_fn: Any,
@@ -74,7 +73,6 @@ def training_step_precomputed(
         batch_size=bsz,
         logit_mean=logit_mean,
         logit_std=logit_std,
-        mode_scale=mode_scale,
     )
     indices = (u * noise_scheduler_copy.config.num_train_timesteps).long()
     timesteps = noise_scheduler_copy.timesteps[indices].to(device=model_input.device)

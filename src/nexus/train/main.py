@@ -39,7 +39,7 @@ from nexus.utils.log_utils import get_experiment_name, setup_mlflow_log_with
 from nexus.utils.train_utils import unwrap_model
 
 from .config import ns_to_kwargs, parse_args
-from .losses import build_loss_fn
+from nexus.losses import build_loss_fn
 from .train_loop import training_step_precomputed
 from .validation import run_validation
 
@@ -393,7 +393,6 @@ def main(args=None):
                     weighting_scheme=loss_cfg.weighting_scheme,
                     logit_mean=loss_cfg.logit_mean,
                     logit_std=loss_cfg.logit_std,
-                    mode_scale=loss_cfg.mode_scale,
                     guidance_scale=train_cfg.guidance_scale,
                     accelerator=accelerator,
                     loss_fn=loss_fn,
