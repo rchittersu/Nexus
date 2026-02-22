@@ -33,6 +33,8 @@ from diffusers.utils import check_min_version
 from peft import LoraConfig
 from tqdm.auto import tqdm
 
+from streaming import StreamingDataLoader
+
 from nexus.utils.checkpoint_utils import (
     make_klein_load_hook,
     make_klein_save_hook,
@@ -264,23 +266,37 @@ def main(args=None):
         raise ValueError("dataset.kwargs.local (or --precomputed_data_dir) is required")
     train_dataset = cfg.dataset._class(**ds_kwargs)
 
+    # Epoch size must be divisible by num_processes so each process gets the same number of samples.
+    epoch_size = getattr(train_dataset, "epoch_size", None)
+    if epoch_size is None and callable(getattr(train_dataset, "size", None)):
+        epoch_size = train_dataset.size()
+    if epoch_size is None:
+        epoch_size = len(train_dataset) * accelerator.num_processes
+    if epoch_size % accelerator.num_processes != 0:
+        raise ValueError(
+            f"Dataset epoch size ({epoch_size}) must be divisible by num_processes ({accelerator.num_processes}). "
+            "Adjust dataset size or number of processes."
+        )
+
     collate_fn = cfg.collate._fn if hasattr(cfg.collate, "_fn") else None
     if collate_fn is None:
         from ..data.precomputed_mds_dataset import collate_precomputed
 
         collate_fn = collate_precomputed
 
-    train_dataloader = torch.utils.data.DataLoader(
+    train_dataloader = StreamingDataLoader(
         train_dataset,
         batch_size=train_cfg.batch_size,
         shuffle=True,
         collate_fn=collate_fn,
         num_workers=train_cfg.dataloader_num_workers,
         drop_last=True,
+        persistent_workers=train_cfg.dataloader_num_workers > 0,
     )
 
     num_warmup = train_cfg.lr_warmup_steps * accelerator.num_processes
-    len_dl = math.ceil(len(train_dataloader) / accelerator.num_processes)
+    # StreamingDataLoader is not wrapped by Accelerate; len() is already per-process.
+    len_dl = len(train_dataloader)
     num_updates_per_epoch = math.ceil(len_dl / train_cfg.gradient_accumulation_steps)
     max_steps_cfg = getattr(train_cfg, "max_steps", None)
     # When max_steps not set: default to 1 epoch
@@ -297,11 +313,12 @@ def main(args=None):
         power=train_cfg.lr_power,
     )
 
-    transformer, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        transformer, optimizer, train_dataloader, lr_scheduler
+    # Do not wrap the DataLoader with Accelerate; Streaming is ready for distributed out of the box.
+    transformer, optimizer, lr_scheduler = accelerator.prepare(
+        transformer, optimizer, lr_scheduler
     )
 
-    len_dl_per_process = len(train_dataloader)
+    len_dl_per_process = len_dl
     max_steps = (
         num_updates_per_epoch if max_steps_cfg is None else max_steps_cfg
     )
