@@ -447,7 +447,6 @@ def main(args=None):
                     weighting_scheme=loss_cfg.weighting_scheme,
                     logit_mean=loss_cfg.logit_mean,
                     logit_std=loss_cfg.logit_std,
-                    guidance_scale=train_cfg.guidance_scale,
                     accelerator=accelerator,
                     loss_fn=loss_fn,
                     step=global_step,

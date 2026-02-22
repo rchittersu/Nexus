@@ -44,7 +44,6 @@ def training_step_precomputed(
     weighting_scheme: str,
     logit_mean: float,
     logit_std: float,
-    guidance_scale: float,
     accelerator: Any,
     loss_fn: Any,
     step: int = 0,
@@ -101,16 +100,10 @@ def training_step_precomputed(
         packed_noisy = torch.cat([packed_noisy, packed_source], dim=1)
         model_input_ids = torch.cat([model_input_ids, source_model_input_ids], dim=1)
 
-    guidance = (
-        torch.full([1], guidance_scale, device=accelerator.device).expand(bsz)
-        if transformer.config.guidance_embeds
-        else None
-    )
-
     model_pred = transformer(
         hidden_states=packed_noisy,
         timestep=timesteps / 1000,
-        guidance=guidance,
+        guidance=None,
         encoder_hidden_states=text_embeds,
         txt_ids=text_ids,
         img_ids=model_input_ids,
@@ -133,7 +126,7 @@ def training_step_precomputed(
         model_input_ids=target_model_input_ids,
         timesteps=timesteps,
         sigmas=sigmas,
-        guidance=guidance,
+        guidance=None,
         text_embeds=text_embeds,
         text_ids=text_ids,
         model=transformer,
