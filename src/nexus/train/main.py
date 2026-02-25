@@ -36,8 +36,8 @@ from tqdm.auto import tqdm
 from streaming import StreamingDataLoader
 
 from nexus.utils.checkpoint_utils import (
-    make_klein_load_hook,
-    make_klein_save_hook,
+    make_dit_load_hook,
+    make_dit_save_hook,
     prune_old_checkpoints,
     save_final_klein,
 )
@@ -74,15 +74,15 @@ def main(args=None):
     # --- Config & logging ---
     config_path = getattr(cfg, "_config_path", None)
 
-    # MPS (Apple Silicon) does not support bf16
-    if torch.backends.mps.is_available() and getattr(cfg, "mixed_precision", None) == "bf16":
-        raise ValueError("bf16 not supported on MPS. Use fp16 or fp32.")
-
     train_cfg = cfg.train
     model_cfg = cfg.model
     lora_cfg = getattr(cfg, "lora", None)
     train_mode = getattr(cfg, "train_mode", "lora")
     pipeline_cfg = getattr(cfg, "pipeline", None) or getattr(model_cfg, "pipeline", None)
+    
+    # basic sanity checks
+    if train_mode == "lora" and not lora_cfg:
+        raise ValueError("lora config is required for lora training")
     if not pipeline_cfg:
         raise ValueError("pipeline config is required")
     pretrained_path = getattr(pipeline_cfg, "pretrained_model_name_or_path", None) or getattr(
@@ -94,8 +94,10 @@ def main(args=None):
     # --- Accelerator & trackers ---
     output_dir, log_with = setup_tracking(cfg)
 
-    proj_config = ProjectConfiguration(project_dir=output_dir, logging_dir=output_dir)
-    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+    proj_config = ProjectConfiguration(project_dir=output_dir)
+    
+    # Make it true if you run into issues with the default value
+    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
 
     accelerator = Accelerator(
         gradient_accumulation_steps=train_cfg.gradient_accumulation_steps,
@@ -104,9 +106,6 @@ def main(args=None):
         project_config=proj_config,
         kwargs_handlers=[ddp_kwargs],
     )
-
-    if torch.backends.mps.is_available():
-        accelerator.native_amp = False
 
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
@@ -134,8 +133,7 @@ def main(args=None):
     elif mp == "bf16":
         weight_dtype = torch.bfloat16
 
-    revision = getattr(model_cfg, "revision", None)
-    variant = getattr(model_cfg, "variant", None)
+
     pipeline_cls = pipeline_cfg._class
     components = _PIPELINE_COMPONENTS.get(pipeline_cls)
     if not components:
@@ -144,13 +142,11 @@ def main(args=None):
             "Add vae/scheduler to model config or extend _PIPELINE_COMPONENTS."
         )
 
-    # Load vae, scheduler from pipeline path (everything except DiT)
+    # Load vae temporarily to get bn stats
     vae_cls, vae_subfolder = components["vae"]
     vae = vae_cls.from_pretrained(
         pretrained_path,
         subfolder=vae_subfolder,
-        revision=revision,
-        variant=variant,
     )
     latents_bn_mean = vae.bn.running_mean.view(1, -1, 1, 1).to(accelerator.device)
     latents_bn_std = torch.sqrt(
@@ -158,15 +154,15 @@ def main(args=None):
     ).to(accelerator.device)
     del vae
 
+    # Load Noise Scheduler
     sched_cls, sched_subfolder = components["scheduler"]
     noise_scheduler = sched_cls.from_pretrained(
         pretrained_path,
         subfolder=sched_subfolder,
-        revision=revision,
     )
     noise_scheduler_copy = copy.deepcopy(noise_scheduler)
 
-    # DiT: load separately
+    # Load DiT 
     dit_cfg = getattr(model_cfg, "dit", model_cfg.transformer)
     trans_cls = dit_cfg._class
     subfolder = dit_cfg.subfolder
@@ -174,19 +170,19 @@ def main(args=None):
     transformer = trans_cls.from_pretrained(
         pretrained_path,
         subfolder=subfolder,
-        revision=revision,
-        variant=variant,
         torch_dtype=weight_dtype,
     )
+
+    # Carefully Enable the trainable parameters
     transformer.requires_grad_(False)
 
     lora_config = None
     if train_mode == "lora" and lora_cfg:
-        target_modules = (
-            [m.strip() for m in lora_cfg.target_modules]
-            if isinstance(lora_cfg.target_modules, list)
-            else [s.strip() for s in str(lora_cfg.target_modules).split(",")]
-        )
+
+        # Assume that the target modules is a list of strings
+        target_modules = [m.strip() for m in lora_cfg.target_modules]
+
+        # Create the LoRA config
         lora_config = LoraConfig(
             r=lora_cfg.rank,
             lora_alpha=lora_cfg.alpha,
@@ -194,12 +190,18 @@ def main(args=None):
             init_lora_weights="gaussian",
             target_modules=target_modules,
         )
+
+        # Add the LoRA config to the transformer
         transformer.add_adapter(lora_config)
     elif train_mode == "full":
+        # Enable all the parameters
         transformer.requires_grad_(True)
 
+    # TODO: Check if this is correct
     pipeline_cls = pipeline_cfg._class if train_mode == "lora" else None
 
+
+    # Enable if there's a memory crunch.
     if train_cfg.gradient_checkpointing:
         transformer.enable_gradient_checkpointing()
 
@@ -213,28 +215,27 @@ def main(args=None):
     is_fsdp = getattr(accelerator.state, "fsdp_plugin", None) is not None
     unwrap = lambda m: unwrap_model(accelerator, m)
 
-    save_hook = make_klein_save_hook(
-        accelerator=accelerator,
-        trans_cls=trans_cls,
-        train_mode=train_mode,
+    save_hook = make_dit_save_hook(
+        transformer_cls=trans_cls,
         pipeline_cls=pipeline_cls,
+        train_mode=train_mode,
+        accelerator=accelerator,
         unwrap_fn=unwrap,
         is_fsdp=is_fsdp,
     )
-    load_hook = make_klein_load_hook(
-        accelerator=accelerator,
-        trans_cls=trans_cls,
-        pretrained_path=pretrained_path,
-        subfolder=subfolder,
-        train_mode=train_mode,
+    load_hook = make_dit_load_hook(
+        transformer_cls=trans_cls,
         pipeline_cls=pipeline_cls,
-        lora_config=lora_config,
+        train_mode=train_mode,
+        accelerator=accelerator,
         unwrap_fn=unwrap,
-        mixed_precision=mp,
+        is_fsdp=is_fsdp,
     )
+
     accelerator.register_save_state_pre_hook(save_hook)
     accelerator.register_load_state_pre_hook(load_hook)
 
+    # TODO: Experiment with this
     if getattr(cfg, "allow_tf32", False) and torch.cuda.is_available():
         torch.backends.cuda.matmul.allow_tf32 = True
 
@@ -244,6 +245,7 @@ def main(args=None):
             train_cfg.gradient_accumulation_steps * train_cfg.batch_size * accelerator.num_processes
         )
 
+    # TODO: Check mixed precision settings later
     if mp == "fp16":
         cast_training_params([transformer], dtype=torch.float32)
 
@@ -262,8 +264,7 @@ def main(args=None):
         batch_size=train_cfg.batch_size,
         latent_dtype=weight_dtype,
     )
-    if ds_kwargs.get("local") is None:
-        raise ValueError("dataset.kwargs.local (or --precomputed_data_dir) is required")
+   
     train_dataset = cfg.dataset._class(**ds_kwargs)
 
     # Epoch size must be divisible by num_processes so each process gets the same number of samples.
@@ -280,9 +281,7 @@ def main(args=None):
 
     collate_fn = cfg.collate._fn if hasattr(cfg.collate, "_fn") else None
     if collate_fn is None:
-        from ..data.precomputed_mds_dataset import collate_precomputed
-
-        collate_fn = collate_precomputed
+        raise ValueError("collate_fn is required")
 
     train_dataloader = StreamingDataLoader(
         train_dataset,
@@ -388,6 +387,7 @@ def main(args=None):
     global_step = 0
     first_epoch = 0
 
+    # TODO: Check resume from checkpoint correctness
     resume = getattr(cfg, "resume_from_checkpoint", None)
     if resume:
         path = resume
@@ -412,9 +412,9 @@ def main(args=None):
         disable=not accelerator.is_local_main_process,
     )
 
-    for _epoch in range(first_epoch, num_epochs):
+    for _ in range(first_epoch, num_epochs):
         transformer.train()
-        for _step, raw_batch in enumerate(train_dataloader):
+        for _, raw_batch in enumerate(train_dataloader):
             batch = {
                 "latents": raw_batch["latents"].to(accelerator.device, dtype=weight_dtype),
                 "text_embeds": raw_batch["text_embeds"].to(accelerator.device, dtype=weight_dtype),
@@ -474,33 +474,31 @@ def main(args=None):
                 progress_bar.set_postfix(**logs)
                 accelerator.log(logs, step=global_step)
 
-                # Periodic validation: generate images and log to trackers
-                val_cfg = getattr(cfg, "validation", None)
-                val_entries = val_cfg and getattr(val_cfg, "entries", None)
-                if (
-                    accelerator.is_main_process
-                    and val_cfg
-                    and val_entries
-                    and global_step % getattr(val_cfg, "steps", 500) == 0
-                ):
-                    run_validation(
-                        pipeline_cls=pipeline_cfg._class,
-                        transformer=unwrap_model(accelerator, transformer),
-                        accelerator=accelerator,
-                        step=global_step,
-                        output_dir=cfg.output_dir,
-                        resolution=getattr(val_cfg, "resolution", 512),
-                        weight_dtype=weight_dtype,
-                        pretrained_path=pretrained_path,
-                        inference_steps=getattr(val_cfg, "inference_steps", 4),
-                        guidance_scale=getattr(val_cfg, "guidance_scale", 1.0),
-                        seed=getattr(val_cfg, "seed", 42),
-                        validation_entries=val_entries,
-                    )
+                # # Periodic validation: generate images and log to trackers
+                # val_cfg = getattr(cfg, "validation", None)
+                # val_entries = val_cfg and getattr(val_cfg, "entries", None)
+                # if (
+                #     accelerator.is_main_process
+                #     and val_cfg
+                #     and val_entries
+                #     and global_step % getattr(val_cfg, "steps", 500) == 0
+                # ):
+                #     run_validation(
+                #         pipeline_cls=pipeline_cfg._class,
+                #         transformer=unwrap_model(accelerator, transformer),
+                #         accelerator=accelerator,
+                #         step=global_step,
+                #         output_dir=cfg.output_dir,
+                #         resolution=getattr(val_cfg, "resolution", 512),
+                #         weight_dtype=weight_dtype,
+                #         pretrained_path=pretrained_path,
+                #         inference_steps=getattr(val_cfg, "inference_steps", 4),
+                #         guidance_scale=getattr(val_cfg, "guidance_scale", 1.0),
+                #         seed=getattr(val_cfg, "seed", 42),
+                #         validation_entries=val_entries,
+                #     )
 
-                if (
-                    accelerator.is_main_process or is_fsdp
-                ) and global_step % cfg.checkpointing_steps == 0:
+                if (accelerator.is_main_process or is_fsdp) and global_step % cfg.checkpointing_steps == 0:
                     limit = getattr(cfg, "checkpoints_total_limit", None)
                     if limit is not None:
                         prune_old_checkpoints(cfg.output_dir, limit)
@@ -512,17 +510,6 @@ def main(args=None):
                 break
 
     accelerator.wait_for_everyone()
-
-    if accelerator.is_main_process:
-        save_final_klein(
-            output_dir=Path(cfg.output_dir),
-            transformer=transformer,
-            train_mode=train_mode,
-            pipeline_cls=pipeline_cls,
-            unwrap_fn=unwrap,
-            logger=logger,
-        )
-
     accelerator.end_training()
 
 

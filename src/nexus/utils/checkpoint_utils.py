@@ -3,15 +3,17 @@ Checkpoint utilities: state dict load/save, pruning, Klein save/load hooks.
 """
 
 import os
+import logging
 import shutil
 from pathlib import Path
 from typing import Any, Callable
 
 import torch
-from diffusers.training_utils import _collate_lora_metadata, cast_training_params
+from diffusers.training_utils import _collate_lora_metadata, cast_training_params, _to_cpu_contiguous
 from diffusers.utils import convert_unet_state_dict_to_peft
 from peft import get_peft_model_state_dict, set_peft_model_state_dict
 
+logger = logging.getLogger(__name__)
 TRANSFORMER_SAFE = "transformer.safetensors"
 TRANSFORMER_PT = "transformer.pt"
 
@@ -50,118 +52,125 @@ def prune_old_checkpoints(output_dir: str, limit: int) -> None:
             shutil.rmtree(os.path.join(output_dir, d))
 
 
-def make_klein_save_hook(
-    accelerator: Any,
-    trans_cls: type,
-    train_mode: str,
+def make_dit_save_hook(
+    transformer_cls: type,
     pipeline_cls: type | None,
+    train_mode: str,
+    accelerator: Any,
     unwrap_fn: Callable,
     is_fsdp: bool,
 ) -> Callable:
-    """Return save hook for Klein DiT (LoRA or full)."""
+    """Return save hook for DiT (LoRA or full)."""
 
-    def save_hook(models, weights, output_dir):
-        trans = next((m for m in models if isinstance(unwrap_fn(m), trans_cls)), None)
-        if trans is None:
-            raise ValueError(f"No {trans_cls} in save models")
-        if not accelerator.is_main_process:
-            return
-        unwrapped = unwrap_fn(trans)
-        if weights:
-            weights.pop()
-        if train_mode == "lora":
-            lora_sd = get_peft_model_state_dict(
-                unwrapped,
-                state_dict=accelerator.get_state_dict(trans) if is_fsdp else None,
-            )
-            if is_fsdp:
-                from diffusers.training_utils import _to_cpu_contiguous
-                lora_sd = _to_cpu_contiguous(lora_sd)
-            pipeline_cls.save_lora_weights(
-                output_dir,
-                transformer_lora_layers=lora_sd,
-                **_collate_lora_metadata({"transformer": trans}),
-            )
-        else:
-            state = (
-                accelerator.get_state_dict(trans) if is_fsdp else unwrapped.state_dict()
-            )
-            save_transformer_state(state, Path(output_dir) / TRANSFORMER_SAFE)
+    if is_fsdp:
+        raise ValueError("FSDP is not supported for save hook")
 
-    return save_hook
+    # Adapted from Flux Klein Dreambooth Teaining Example
+    # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
+    def save_model_hook(models, weights, output_dir):
 
+        # 1) Validate and pick the transformer model
+        modules_to_save: dict[str, Any] = {}
+        transformer_model = None
 
-def make_klein_load_hook(
-    accelerator: Any,
-    trans_cls: type,
-    pretrained_path: str,
-    subfolder: str,
-    train_mode: str,
-    pipeline_cls: type | None,
-    lora_config: Any,
-    unwrap_fn: Callable,
-    mixed_precision: str | None,
-) -> Callable:
-    """Return load hook for Klein DiT (LoRA or full)."""
+        for model in models:
+            if isinstance(unwrap_fn(model), transformer_cls):
+                transformer_model = model
+                modules_to_save["transformer"] = model
+            else:
+                raise ValueError(f"unexpected save model: {model.__class__}")
 
-    def load_hook(models, input_dir):
-        input_path = Path(input_dir)
-        if train_mode == "lora" and pipeline_cls is None:
-            raise ValueError("pipeline_cls required for LoRA load")
-        is_fsdp = getattr(accelerator.state, "fsdp_plugin", None) is not None
-        if is_fsdp:
-            trans = trans_cls.from_pretrained(pretrained_path, subfolder=subfolder)
+        if transformer_model is None:
+            raise ValueError("No transformer model found in 'models'")
+
+        # 2) Optionally gather FSDP state dict once
+        # TODO: Handle FSDP case later
+        # state_dict = accelerator.get_state_dict(model) if is_fsdp else None
+
+        # 3) Only main process materializes the LoRA state dict
+        if accelerator.is_main_process:
+            peft_kwargs = {}
+            # TODO: Handle FSDP case later
+            # if is_fsdp:
+            #     peft_kwargs["state_dict"] = state_dict
+
             if train_mode == "lora":
-                trans.add_adapter(lora_config)
-        else:
-            trans = None
-            while models:
-                m = models.pop()
-                if isinstance(unwrap_fn(m), trans_cls):
-                    trans = unwrap_fn(m)
-                    break
-            if trans is None:
-                raise ValueError("No transformer in load hook")
+                layers_to_save = get_peft_model_state_dict(
+                    unwrap_fn(transformer_model) if is_fsdp else transformer_model,
+                    **peft_kwargs,
+                )
+
+                # TODO: Don't know fsdp related caveats
+                # if is_fsdp:
+                #     layers_to_save = _to_cpu_contiguous(layers_to_save)
+
+                pipeline_cls.save_lora_weights(
+                    output_dir,
+                    transformer_lora_layers=layers_to_save,
+                    **_collate_lora_metadata(modules_to_save),
+                )
+
+            else:
+                transformer_to_save = unwrap_fn(transformer_model) if is_fsdp else transformer_model
+                # TODO: Don't know fsdp related caveats
+                transformer_to_save.save_pretrained(output_dir)
+
+            if weights:
+                weights.pop()
+
+    return save_model_hook
+
+
+def make_dit_load_hook(
+    transformer_cls: type,
+    pipeline_cls: type | None,
+    train_mode: str,
+    accelerator: Any,
+    unwrap_fn: Callable,
+    is_fsdp: bool,
+) -> Callable:
+    """Return load hook for  DiT (LoRA or full)."""
+
+    if is_fsdp:
+        raise ValueError("FSDP is not supported for load hook")
+
+    def load_model_hook(models, input_dir):
+
+        assert len(models) == 1, "Only one transformer model is supported"
+        transformer_ = unwrap_fn(models[0])
+        assert isinstance(transformer_, transformer_cls), "Transformer model is not of type transformer_cls"
+
+        # TODO: Handle FSDP case later
+
         if train_mode == "lora":
-            lora_sd = pipeline_cls.lora_state_dict(input_dir)
-            trans_sd = {
-                k[len("transformer."):]: v
-                for k, v in lora_sd.items()
-                if k.startswith("transformer.")
+            lora_state_dict = pipeline_cls.lora_state_dict(input_dir)
+
+            transformer_state_dict = {
+                f"{k.replace('transformer.', '')}": v for k, v in lora_state_dict.items() if k.startswith("transformer.")
             }
-            trans_sd = convert_unet_state_dict_to_peft(trans_sd)
-            set_peft_model_state_dict(trans, trans_sd, adapter_name="default")
+
+            transformer_state_dict = convert_unet_state_dict_to_peft(transformer_state_dict)
+            incompatible_keys = set_peft_model_state_dict(transformer_, transformer_state_dict, adapter_name="default")
+            if incompatible_keys is not None:
+                # check only for unexpected keys
+                unexpected_keys = getattr(incompatible_keys, "unexpected_keys", None)
+                if unexpected_keys:
+                    logger.warning(
+                        f"Loading adapter weights from state_dict led to unexpected keys not found in the model: "
+                        f" {unexpected_keys}. "
+                    )
         else:
+            input_path = Path(input_dir)
             for name in (TRANSFORMER_SAFE, TRANSFORMER_PT):
                 p = input_path / name
                 if p.exists():
-                    trans.load_state_dict(load_transformer_state(p), strict=False)
+                    transformer_.load_state_dict(load_transformer_state(p), strict=False)
                     break
-        if mixed_precision == "fp16":
-            cast_training_params([trans])
+            else:
+                raise FileNotFoundError(
+                    f"No transformer checkpoint found in {input_dir}. "
+                    f"Expected {TRANSFORMER_SAFE} or {TRANSFORMER_PT}."
+                )
 
-    return load_hook
-
-
-def save_final_klein(
-    output_dir: Path,
-    transformer: torch.nn.Module,
-    train_mode: str,
-    pipeline_cls: type | None,
-    unwrap_fn: Callable,
-    logger: Any = None,
-) -> None:
-    """Save final Klein DiT (LoRA or full) to output_dir."""
-    trans = unwrap_fn(transformer)
-    if train_mode == "lora":
-        lora_sd = get_peft_model_state_dict(trans)
-        pipeline_cls.save_lora_weights(
-            str(output_dir),
-            transformer_lora_layers=lora_sd,
-            **_collate_lora_metadata({"transformer": trans}),
-        )
-    else:
-        path = output_dir / TRANSFORMER_SAFE
-        save_transformer_state(trans.state_dict(), path)
-    if logger:
-        logger.info("Saved %s weights to %s", "LoRA" if train_mode == "lora" else "full", output_dir)
+    # We aren't using mixed precision; so we don't need to upcast trainable parameters
+    return load_model_hook
