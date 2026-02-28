@@ -28,7 +28,6 @@ from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration, set_seed
 from diffusers.optimization import get_scheduler
-from diffusers.training_utils import cast_training_params
 from diffusers.utils import check_min_version
 from peft import LoraConfig
 from tqdm.auto import tqdm
@@ -170,7 +169,6 @@ def main(args=None):
     transformer = trans_cls.from_pretrained(
         pretrained_path,
         subfolder=subfolder,
-        torch_dtype=weight_dtype,
     )
 
     # Carefully Enable the trainable parameters
@@ -210,8 +208,6 @@ def main(args=None):
         dest = Path(cfg.output_dir) / "config.yaml"
         shutil.copy2(config_path, dest)
         logger.info("Config copied to %s", dest)
-    transformer.to(device=accelerator.device, dtype=weight_dtype)
-
     is_fsdp = getattr(accelerator.state, "fsdp_plugin", None) is not None
     unwrap = lambda m: unwrap_model(accelerator, m)
 
@@ -244,10 +240,6 @@ def main(args=None):
         learning_rate *= (
             train_cfg.gradient_accumulation_steps * train_cfg.batch_size * accelerator.num_processes
         )
-
-    # TODO: Check mixed precision settings later
-    if mp == "fp16":
-        cast_training_params([transformer], dtype=torch.float32)
 
     opt_cls = cfg.optimizer._class
     opt_kwargs = ns_to_kwargs(getattr(cfg.optimizer, "kwargs", None))
