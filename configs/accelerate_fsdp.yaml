@@ -1,0 +1,113 @@
+# Accelerate config for FSDP (Fully Sharded Data Parallel) training with Flux.2 Klein.
+#
+# Usage:
+#   accelerate launch --config_file configs/accelerate_fsdp.yaml -m nexus.train \
+#     --config configs/klein4b/t2i_finetune.yaml --precomputed_data_dir /path/to/mds
+#
+# LoRA + FSDP: The training code sets PEFT's fsdp_auto_wrap_policy when both are active.
+# For full fine-tune, this config uses TRANSFORMER_BASED_WRAP with Flux2 block classes.
+#
+# --- Top-level fields ---
+
+# compute_environment: LOCAL_MACHINE | AMAZON_SAGEMAKER
+# Where training runs (SageMaker for AWS hosted training)
+compute_environment: LOCAL_MACHINE
+
+# debug: true | false
+# If true, only main process runs; useful for debugging launch/config
+debug: false
+
+# distributed_type: FSDP | NO | MULTI_GPU | DEEPSPEED | MEGATRON_LM | XLA | ...
+# FSDP shards params, gradients, optimizer across GPUs (ZeRO-3 style)
+distributed_type: FSDP
+
+# downcast_bf16: 'no' | 'yes'
+# Whether to downcast bf16 to fp32; 'no' keeps full bf16
+downcast_bf16: 'no'
+
+# --- FSDP-specific options ---
+fsdp_config:
+  # fsdp_auto_wrap_policy: TRANSFORMER_BASED_WRAP | SIZE_BASED_WRAP | NO_WRAP
+  #   TRANSFORMER_BASED_WRAP - wrap each block (uses fsdp_transformer_layer_cls_to_wrap)
+  #   SIZE_BASED_WRAP - wrap modules with > fsdp_min_num_params params
+  #   NO_WRAP - single FSDP unit (minimal memory saving)
+  fsdp_auto_wrap_policy: TRANSFORMER_BASED_WRAP
+
+  # fsdp_backward_prefetch: BACKWARD_PRE | BACKWARD_POST | NO_PREFETCH
+  #   BACKWARD_PRE - prefetch before backward (recommended)
+  #   BACKWARD_POST - prefetch after backward
+  #   NO_PREFETCH - no prefetching
+  fsdp_backward_prefetch: BACKWARD_PRE
+
+  # fsdp_forward_prefetch: true | false
+  # Prefetch next all-gather during forward. Only for static-graph models.
+  fsdp_forward_prefetch: false
+
+  # fsdp_cpu_ram_efficient_loading: true | false
+  # If true, only rank 0 loads pretrained; others sync. Set false for diffusers.
+  fsdp_cpu_ram_efficient_loading: false
+
+  # fsdp_offload_params: true | false
+  # Offload params/gradients to CPU (slower, for very large models)
+  fsdp_offload_params: false
+
+  # fsdp_sharding_strategy: FULL_SHARD | SHARD_GRAD_OP | NO_SHARD | HYBRID_SHARD | HYBRID_SHARD_ZERO2
+  #   FULL_SHARD - shard params + grads + optimizer (ZeRO-3, max memory saving)
+  #   SHARD_GRAD_OP - shard grads + optimizer (ZeRO-2)
+  #   NO_SHARD - like DDP (ZeRO-0)
+  #   HYBRID_SHARD - shard within node, full copy per node
+  #   HYBRID_SHARD_ZERO2 - grads+optimizer per node
+  fsdp_sharding_strategy: FULL_SHARD
+
+  # fsdp_state_dict_type: SHARDED_STATE_DICT | FULL_STATE_DICT | LOCAL_STATE_DICT
+  #   SHARDED_STATE_DICT - each process saves its shards (recommended for resume)
+  #   FULL_STATE_DICT - rank 0 saves full model (portable)
+  #   LOCAL_STATE_DICT - each rank saves its local params
+  fsdp_state_dict_type: SHARDED_STATE_DICT
+
+  # fsdp_sync_module_states: true | false
+  # If true, broadcast params from rank 0 into each FSDP unit at init.
+  fsdp_sync_module_states: true
+
+  # fsdp_transformer_layer_cls_to_wrap: comma-separated class names (TRANSFORMER_BASED_WRAP only)
+  # Flux2Transformer2DModel: Flux2TransformerBlock,Flux2SingleTransformerBlock
+  # Other models: use model._no_split_modules or e.g. BertLayer,GPTJBlock,T5Block
+  fsdp_transformer_layer_cls_to_wrap: Flux2TransformerBlock,Flux2SingleTransformerBlock
+
+  # fsdp_use_orig_params: true | false
+  # If true, supports mixed trainable/frozen (required for LoRA). false gives more memory savings.
+  fsdp_use_orig_params: true
+
+# --- Multi-process / multi-node ---
+
+# machine_rank: int (0 for main machine)
+machine_rank: 0
+
+# main_training_function: str (entry point for accelerate launch)
+main_training_function: main
+
+# mixed_precision: bf16 | fp16 | fp8 | no
+mixed_precision: bf16
+
+# num_machines: int (nodes in cluster)
+num_machines: 1
+
+# num_processes: int (GPUs per machine; total = num_machines * num_processes)
+num_processes: 2
+
+# rdzv_backend: static | c10d | etcd
+# Rendezvous backend for process discovery
+rdzv_backend: static
+
+# same_network: true | false
+# All machines on same LAN
+same_network: true
+
+# --- TPU (unused for GPU) ---
+tpu_env: []
+tpu_use_cluster: false
+tpu_use_sudo: false
+
+# use_cpu: true | false
+# Force CPU (false = use GPU/MPS)
+use_cpu: false

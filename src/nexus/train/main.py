@@ -207,6 +207,12 @@ def main(args=None):
         shutil.copy2(config_path, dest)
         logger.info("Config copied to %s", dest)
     is_fsdp = getattr(accelerator.state, "fsdp_plugin", None) is not None
+    if train_mode == "lora" and is_fsdp:
+        from peft.utils.other import fsdp_auto_wrap_policy
+
+        fsdp_plugin = accelerator.state.fsdp_plugin
+        fsdp_plugin.auto_wrap_policy = fsdp_auto_wrap_policy(transformer)
+
     unwrap = lambda m: unwrap_model(accelerator, m)
 
     save_hook = make_dit_save_hook(

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import torch
-from diffusers.training_utils import _collate_lora_metadata, cast_training_params, _to_cpu_contiguous
+from diffusers.training_utils import _collate_lora_metadata, _to_cpu_contiguous
 from diffusers.utils import convert_unet_state_dict_to_peft
 from peft import get_peft_model_state_dict, set_peft_model_state_dict
 
@@ -86,12 +86,9 @@ def make_dit_save_hook(
     unwrap_fn: Callable,
     is_fsdp: bool,
 ) -> Callable:
-    """Return save hook for DiT (LoRA or full)."""
+    """Return save hook for DiT (LoRA or full). Supports FSDP via state dict gathering."""
 
-    if is_fsdp:
-        raise ValueError("FSDP is not supported for save hook")
-
-    # Adapted from Flux Klein Dreambooth Teaining Example
+    # Adapted from Flux Klein Dreambooth Training Example
     # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
     def save_model_hook(models, weights, output_dir):
 
@@ -109,26 +106,24 @@ def make_dit_save_hook(
         if transformer_model is None:
             raise ValueError("No transformer model found in 'models'")
 
-        # 2) Optionally gather FSDP state dict once
-        # TODO: Handle FSDP case later
-        # state_dict = accelerator.get_state_dict(model) if is_fsdp else None
+        # 2) Gather full state dict for FSDP (rank0_only, offload_to_cpu)
+        full_state_dict = None
+        if is_fsdp:
+            full_state_dict = accelerator.get_state_dict(transformer_model)
 
-        # 3) Only main process materializes the LoRA state dict
+        # 3) Only main process materializes the LoRA/full checkpoint in inference format
         if accelerator.is_main_process:
             peft_kwargs = {}
-            # TODO: Handle FSDP case later
-            # if is_fsdp:
-            #     peft_kwargs["state_dict"] = state_dict
+            if full_state_dict is not None:
+                peft_kwargs["state_dict"] = full_state_dict
 
             if train_mode == "lora":
                 layers_to_save = get_peft_model_state_dict(
-                    unwrap_fn(transformer_model) if is_fsdp else transformer_model,
+                    unwrap_fn(transformer_model),
                     **peft_kwargs,
                 )
-
-                # TODO: Don't know fsdp related caveats
-                # if is_fsdp:
-                #     layers_to_save = _to_cpu_contiguous(layers_to_save)
+                if full_state_dict is not None:
+                    layers_to_save = _to_cpu_contiguous(layers_to_save)
 
                 pipeline_cls.save_lora_weights(
                     output_dir,
@@ -137,9 +132,15 @@ def make_dit_save_hook(
                 )
 
             else:
-                transformer_to_save = unwrap_fn(transformer_model) if is_fsdp else transformer_model
-                # TODO: Don't know fsdp related caveats
-                transformer_to_save.save_pretrained(output_dir)
+                transformer_to_save = unwrap_fn(transformer_model)
+                if full_state_dict is not None:
+                    transformer_to_save.save_pretrained(
+                        output_dir,
+                        state_dict=full_state_dict,
+                        safe_serialization=True,
+                    )
+                else:
+                    transformer_to_save.save_pretrained(output_dir)
 
             if weights:
                 weights.pop()
@@ -155,18 +156,19 @@ def make_dit_load_hook(
     unwrap_fn: Callable,
     is_fsdp: bool,
 ) -> Callable:
-    """Return load hook for  DiT (LoRA or full)."""
-
-    if is_fsdp:
-        raise ValueError("FSDP is not supported for load hook")
+    """Return load hook for DiT (LoRA or full). For FSDP, load_fsdp_model handles loading."""
 
     def load_model_hook(models, input_dir):
+        # For FSDP, Accelerate's load_fsdp_model runs before hooks and models=[].
+        # The model is already loaded from FSDP shards; skip our custom load.
+        if is_fsdp and len(models) == 0:
+            return
 
+        # Use models list; for FSDP we already returned. Pop to signal we handled loading.
         assert len(models) == 1, "Only one transformer model is supported"
-        transformer_ = unwrap_fn(models.pop())
+        transformer_model = models.pop()
+        transformer_ = unwrap_fn(transformer_model)
         assert isinstance(transformer_, transformer_cls), "Transformer model is not of type transformer_cls"
-
-        # TODO: Handle FSDP case later
 
         if train_mode == "lora":
             lora_state_dict = pipeline_cls.lora_state_dict(input_dir)

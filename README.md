@@ -20,13 +20,12 @@ cd datasets/prepare/sstk && ./run.sh all
 **Train**:
 
 ```bash
-accelerate launch -m nexus.train \
-  --config configs/klein4b/t2i_finetune.yaml \
+./scripts/train.sh configs/klein4b/t2i_finetune.yaml \
   --precomputed_data_dir /path/to/mds_latents \
-  --output_dir my-run   # overrides mlflow.run_name
+  --output_dir my-run
 ```
 
-Or use `./scripts/train.sh` as a wrapper.
+Or run `accelerate launch` directly (uses your default accelerate config; DDP by default).
 
 ---
 
@@ -75,15 +74,27 @@ mlflow:
 
 ## Training
 
-| CLI | Effect |
-|-----|--------|
-| `--config` | Required. YAML path. |
+| train.sh / CLI | Effect |
+|----------------|--------|
+| `--config`, `-c` | Required. YAML path. |
+| `--fsdp`, `-f` | Use FSDP (configs/accelerate_fsdp.yaml). Omit for default DDP. |
+| `--cuda_visible_devices`, `-g` | GPU IDs (e.g. 0,1). train.sh only. |
 | `--precomputed_data_dir` | Overrides `dataset.kwargs.local` |
 | `--output_dir` | Overrides `mlflow.run_name` (run identifier in output path) |
 | `--max_train_steps` | Overrides `train.max_steps` |
 | `--auto_resume` | When output_dir has checkpoints, resume from latest and continue the same MLflow run |
 
 **Existing output_dir:** If checkpoints exist and `--auto_resume` is not set, training errors. If no checkpoints exist, a warning is logged and a fresh run starts (new MLflow run).
+
+**FSDP (Fully Sharded Data Parallel):** For memory-efficient multi-GPU training, pass `--fsdp`:
+
+```bash
+./scripts/train.sh configs/klein4b/t2i_finetune.yaml --fsdp \
+  --precomputed_data_dir /path/to/mds_latents \
+  --output_dir my-fsdp-run
+```
+
+LoRA + FSDP uses PEFT's wrap policy automatically. Adjust `num_processes` in `configs/accelerate_fsdp.yaml` for your GPU count. Without `--fsdp`, training uses your default accelerate config (typically DDP).
 
 ---
 
@@ -175,9 +186,10 @@ mlflow ui --backend-store-uri ./logs/mlruns --host 0.0.0.0
 
 ```
 configs/
-├── klein4b/         # base, t2i_finetune, t2i_dreambooth, t2i_distillation
-└── klein4b-base/   # same structure, FLUX.2-klein-base-4B model
-scripts/train.sh     # wrapper for accelerate launch
+├── accelerate_fsdp.yaml  # FSDP config for multi-GPU training
+├── klein4b/               # base, t2i_finetune, t2i_dreambooth, t2i_distillation
+└── klein4b-base/          # same structure, FLUX.2-klein-base-4B model
+scripts/train.sh     # wrapper for accelerate launch; use --fsdp for FSDP
 src/nexus/
 ├── train/           # main, config, train_loop, validation
 ├── losses/          # flow_matching, distillation, prior_preservation
