@@ -163,7 +163,7 @@ def make_dit_load_hook(
     def load_model_hook(models, input_dir):
 
         assert len(models) == 1, "Only one transformer model is supported"
-        transformer_ = unwrap_fn(models[0])
+        transformer_ = unwrap_fn(models.pop())
         assert isinstance(transformer_, transformer_cls), "Transformer model is not of type transformer_cls"
 
         # TODO: Handle FSDP case later
