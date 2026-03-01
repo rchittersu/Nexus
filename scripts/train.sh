@@ -32,4 +32,4 @@ done
 [[ -n "$CONFIG" ]] || { echo "Usage: $0 <config.yaml> | --config <config.yaml> [--cuda_visible_devices 0,1]"; exit 1; }
 
 [[ -z "$CUDA_VISIBLE_DEVICES" ]] || export CUDA_VISIBLE_DEVICES
-accelerate launch -m nexus.train.main --config "$CONFIG"
+accelerate launch -m nexus.train --config "$CONFIG"

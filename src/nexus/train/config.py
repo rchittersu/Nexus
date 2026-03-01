@@ -125,7 +125,7 @@ def parse_args(input_args=None) -> SimpleNamespace:
     parser.add_argument("--output_dir", type=str, default=None, help="Override mlflow.run_name")
     parser.add_argument("--precomputed_data_dir", type=str, default=None)
     parser.add_argument("--max_train_steps", type=int, default=None)
-    parser.add_argument("--resume_from_checkpoint", type=str, default=None)
+    parser.add_argument("--auto_resume", action="store_true", help="Resume from latest checkpoint when output_dir already has checkpoints")
 
     args = parser.parse_args(input_args) if input_args else parser.parse_args()
     cfg = load_config(args.config)
@@ -143,8 +143,7 @@ def parse_args(input_args=None) -> SimpleNamespace:
         cfg.mlflow.run_name = args.output_dir
     if args.max_train_steps is not None:
         cfg.train.max_steps = args.max_train_steps
-    if args.resume_from_checkpoint is not None:
-        cfg.resume_from_checkpoint = args.resume_from_checkpoint
+    cfg.auto_resume = args.auto_resume
 
     cfg.local_rank = int(os.environ.get("LOCAL_RANK", -1))
     return cfg

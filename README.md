@@ -20,7 +20,7 @@ cd datasets/prepare/sstk && ./run.sh all
 **Train**:
 
 ```bash
-accelerate launch -m nexus.train.main \
+accelerate launch -m nexus.train \
   --config configs/klein4b/t2i_finetune.yaml \
   --precomputed_data_dir /path/to/mds_latents \
   --output_dir my-run   # overrides mlflow.run_name
@@ -67,7 +67,7 @@ mlflow:
 
 **Main sections:** `pipeline`, `model.dit`, `dataset`, `train`, `train_mode`, `lora`, `loss`, `optimizer`, `validation`, `mlflow`
 
-**mlflow required:** `experiment_name`, `run_name`. Output path: `log_root/experiments/{user}/{experiment_name}-{run_name}` (user from `mlflow.user`, defaults to `default` if null).
+**mlflow required:** `experiment_name`, `run_name`. Output path: `log_root/experiments/{user}/{experiment_name}-{run_name}` (user from `mlflow.user`, defaults to `default` if null). MLflow run name is `{run_name}-{user}` for 1-to-1 mapping with output_dir; resume finds the run by name (no run_id file).
 
 **validation** (inherited from base): `inference_steps: 4`, `guidance_scale: 1.0`. Override `steps`, `entries`, `resolution` per config. Each entry: `{prompt, source, num_images}` (source: null for t2i, path for img2img).
 
@@ -81,7 +81,9 @@ mlflow:
 | `--precomputed_data_dir` | Overrides `dataset.kwargs.local` |
 | `--output_dir` | Overrides `mlflow.run_name` (run identifier in output path) |
 | `--max_train_steps` | Overrides `train.max_steps` |
-| `--resume_from_checkpoint` | Path or `latest` |
+| `--auto_resume` | When output_dir has checkpoints, resume from latest and continue the same MLflow run |
+
+**Existing output_dir:** If checkpoints exist and `--auto_resume` is not set, training errors. If no checkpoints exist, a warning is logged and a fresh run starts (new MLflow run).
 
 ---
 
@@ -177,7 +179,8 @@ configs/
 └── klein4b-base/   # same structure, FLUX.2-klein-base-4B model
 scripts/train.sh     # wrapper for accelerate launch
 src/nexus/
-├── train/           # main, config, train_loop, losses, validation
+├── train/           # main, config, train_loop, validation
+├── losses/          # flow_matching, distillation, prior_preservation
 ├── data/            # precomputed datasets, collate
 └── utils/           # checkpoint, log, train utils
 datasets/

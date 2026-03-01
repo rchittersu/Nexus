@@ -38,7 +38,6 @@ from nexus.utils.checkpoint_utils import (
     make_dit_load_hook,
     make_dit_save_hook,
     prune_old_checkpoints,
-    save_final_klein,
 )
 from nexus.utils.config_utils import check_prior_preservation_config
 from nexus.utils.log_utils import init_trackers, log_dataset_input, setup_tracking
@@ -47,7 +46,6 @@ from nexus.utils.train_utils import unwrap_model
 from .config import ns_to_kwargs, parse_args
 from nexus.losses import build_loss_fn
 from .train_loop import training_step_precomputed
-from .validation import run_validation
 
 check_min_version("0.37.0.dev0")
 
@@ -278,10 +276,8 @@ def main(args=None):
     train_dataloader = StreamingDataLoader(
         train_dataset,
         batch_size=train_cfg.batch_size,
-        shuffle=True,
         collate_fn=collate_fn,
         num_workers=train_cfg.dataloader_num_workers,
-        drop_last=True,
         persistent_workers=train_cfg.dataloader_num_workers > 0,
     )
 
@@ -379,23 +375,12 @@ def main(args=None):
     global_step = 0
     first_epoch = 0
 
-    # TODO: Check resume from checkpoint correctness
-    resume = getattr(cfg, "resume_from_checkpoint", None)
-    if resume:
-        path = resume
-        if path == "latest":
-            dirs = [d for d in os.listdir(cfg.output_dir) if d.startswith("checkpoint")]
-            dirs = sorted(dirs, key=lambda x: int(x.split("-")[1]))
-            path = dirs[-1] if dirs else None
-        else:
-            path = os.path.basename(path)
-        if path:
-            accelerator.print(f"Resuming from {path}")
-            accelerator.load_state(os.path.join(cfg.output_dir, path))
-            global_step = int(path.split("-")[1])
-            first_epoch = global_step // num_updates_per_epoch
-        else:
-            resume = None
+    path = getattr(cfg, "resume_from_checkpoint", None)
+    if path:
+        accelerator.print(f"Resuming from {path}")
+        accelerator.load_state(os.path.join(cfg.output_dir, path))
+        global_step = int(path.split("-")[1])
+        first_epoch = global_step // num_updates_per_epoch
 
     progress_bar = tqdm(
         range(max_steps),
@@ -465,30 +450,6 @@ def main(args=None):
                         logs[k] = v
                 progress_bar.set_postfix(**logs)
                 accelerator.log(logs, step=global_step)
-
-                # # Periodic validation: generate images and log to trackers
-                # val_cfg = getattr(cfg, "validation", None)
-                # val_entries = val_cfg and getattr(val_cfg, "entries", None)
-                # if (
-                #     accelerator.is_main_process
-                #     and val_cfg
-                #     and val_entries
-                #     and global_step % getattr(val_cfg, "steps", 500) == 0
-                # ):
-                #     run_validation(
-                #         pipeline_cls=pipeline_cfg._class,
-                #         transformer=unwrap_model(accelerator, transformer),
-                #         accelerator=accelerator,
-                #         step=global_step,
-                #         output_dir=cfg.output_dir,
-                #         resolution=getattr(val_cfg, "resolution", 512),
-                #         weight_dtype=weight_dtype,
-                #         pretrained_path=pretrained_path,
-                #         inference_steps=getattr(val_cfg, "inference_steps", 4),
-                #         guidance_scale=getattr(val_cfg, "guidance_scale", 1.0),
-                #         seed=getattr(val_cfg, "seed", 42),
-                #         validation_entries=val_entries,
-                #     )
 
                 if (accelerator.is_main_process or is_fsdp) and global_step % cfg.checkpointing_steps == 0:
                     limit = getattr(cfg, "checkpoints_total_limit", None)

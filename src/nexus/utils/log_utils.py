@@ -25,11 +25,17 @@ def _require_mlflow(cfg) -> None:
         raise ValueError("mlflow.run_name is required")
 
 
-def setup_mlflow_log_with(log_root: str | Path, mlflow_cfg) -> "MLflowTracker":
+def setup_mlflow_log_with(
+    log_root: str | Path,
+    mlflow_cfg,
+    mlflow_run_name: str,
+    run_id: str | None = None,
+) -> "MLflowTracker":
     """
     Setup MLflow tracking. Returns MLflowTracker.
     MLflow store at project level: log_root/mlruns.
-    Sets run_name from mlflow.run_name.
+    run_name is "{run_name}-{user}" for 1-to-1 mapping with output_dir.
+    If run_id is given (resume), continues the existing run; otherwise creates a new run.
     """
     mlflow_dir = Path(log_root).resolve() / "mlruns"
     mlflow_dir.mkdir(parents=True, exist_ok=True)
@@ -39,7 +45,8 @@ def setup_mlflow_log_with(log_root: str | Path, mlflow_cfg) -> "MLflowTracker":
     return MLflowTracker(
         experiment_name=mlflow_cfg.experiment_name,
         logging_dir=str(mlflow_dir),
-        run_name=mlflow_cfg.run_name,
+        run_name=mlflow_run_name,
+        run_id=run_id,
     )
 
 
@@ -62,26 +69,84 @@ def get_output_dir(log_root: str | Path, experiment_name: str, run_name: str, us
     return Path(log_root).resolve() / "experiments" / user_dir / f"{experiment_name}-{run_name}"
 
 
+def _find_mlflow_run_by_name(experiment_name: str, mlflow_run_name: str, tracking_uri: str | None = None) -> str | None:
+    """Search for run with given name in experiment. Returns run_id if found."""
+    try:
+        from mlflow import MlflowClient
+
+        client = MlflowClient(tracking_uri=tracking_uri)
+        exps = client.search_experiments(filter_string=f"name = '{experiment_name}'")
+        if not exps:
+            return None
+        exp_id = exps[0].experiment_id
+        runs = client.search_runs(
+            experiment_ids=[exp_id],
+            filter_string=f'tags.`mlflow.runName` = "{mlflow_run_name}"',
+            max_results=1,
+        )
+        if runs:
+            return runs[0].info.run_id
+    except Exception:
+        pass
+    return None
+
+
+def _purge_mlflow_run_by_name(
+    experiment_name: str, mlflow_run_name: str, tracking_uri: str | None = None
+) -> None:
+    """Delete existing run with given name in experiment (for overwrite when not resuming)."""
+    run_id = _find_mlflow_run_by_name(experiment_name, mlflow_run_name, tracking_uri)
+    if run_id:
+        try:
+            from mlflow import MlflowClient
+
+            MlflowClient(tracking_uri=tracking_uri).delete_run(run_id)
+        except Exception:
+            pass
+
+
 def setup_tracking(cfg) -> tuple[str, "MLflowTracker"]:
     """
     Validate mlflow config and setup tracking. Sets cfg.output_dir.
+    MLflow run name is "{run_name}-{user}" for 1-to-1 mapping with output_dir.
+    Runs checkpoint check: if resuming, finds existing run by name and continues; else creates new run.
     Returns (output_dir, log_with) for use with Accelerator.
     """
+    from nexus.utils.checkpoint_utils import check_existing_checkpoints
+
     _require_mlflow(cfg)
     mlflow_cfg = cfg.mlflow
     log_root = Path(getattr(cfg, "log_root", "logs")).resolve()
     experiment_name = mlflow_cfg.experiment_name
     run_name = mlflow_cfg.run_name
-    run_user = getattr(mlflow_cfg, "user", None)
+    run_user = getattr(mlflow_cfg, "user", "default")
     output_dir = str(get_output_dir(log_root, experiment_name, run_name, user=run_user))
     cfg.output_dir = output_dir
-    log_with = setup_mlflow_log_with(log_root, mlflow_cfg)
+
+    mlflow_run_name = f"{run_name}-{run_user}"
+    check_existing_checkpoints(cfg)
+
+    mlflow_dir = Path(log_root).resolve() / "mlruns"
+    tracking_uri = getattr(mlflow_cfg, "tracking_uri", None) or mlflow_dir.as_uri()
+    os.environ.setdefault("MLFLOW_TRACKING_URI", tracking_uri)
+
+    run_id = None
+    uri = tracking_uri if tracking_uri.startswith(("http", "file")) else Path(tracking_uri).resolve().as_uri()
+    if getattr(cfg, "resume_from_checkpoint", None):
+        run_id = _find_mlflow_run_by_name(experiment_name, mlflow_run_name, uri)
+    else:
+        _purge_mlflow_run_by_name(experiment_name, mlflow_run_name, uri)
+
+    log_with = setup_mlflow_log_with(
+        log_root, mlflow_cfg, mlflow_run_name=mlflow_run_name, run_id=run_id
+    )
     return output_dir, log_with
 
 
 def init_trackers(accelerator: "Accelerator", cfg) -> None:
     """
     Init MLflow trackers and set user tag. Call when accelerator.is_main_process.
+    MLflow run name is "{run_name}-{user}" for 1-to-1 mapping with output_dir (no run_id file).
     """
     mlflow_cfg = cfg.mlflow
     config_dict = {}
@@ -92,7 +157,7 @@ def init_trackers(accelerator: "Accelerator", cfg) -> None:
             except Exception:
                 config_dict[k] = repr(v)
     accelerator.init_trackers(mlflow_cfg.experiment_name, config=config_dict)
-    set_mlflow_user_tag(getattr(mlflow_cfg, "user", None))
+    set_mlflow_user_tag(getattr(mlflow_cfg, "user", "default"))
 
 
 def log_dataset_input(

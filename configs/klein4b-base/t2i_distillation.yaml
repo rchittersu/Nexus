@@ -63,7 +63,6 @@ validation:
   seed: 42
 
 checkpointing_steps: 500
-resume_from_checkpoint: null
 seed: null
 
 allow_tf32: false

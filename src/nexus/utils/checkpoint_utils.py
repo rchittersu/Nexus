@@ -41,6 +41,32 @@ def save_transformer_state(state: dict, path: Path) -> None:
         torch.save(state, path)
 
 
+def check_existing_checkpoints(cfg) -> None:
+    """
+    When output_dir exists: if checkpoints exist, either set resume (auto_resume)
+    or raise; if no checkpoints, warn and continue.
+    """
+    output_dir = getattr(cfg, "output_dir", None)
+    if not output_dir or not os.path.exists(output_dir):
+        return
+    ckpt_dirs = [d for d in os.listdir(output_dir) if d.startswith("checkpoint")]
+    if ckpt_dirs:
+        auto_resume = getattr(cfg, "auto_resume", False)
+        if auto_resume:
+            latest = sorted(ckpt_dirs, key=lambda x: int(x.split("-")[1]))[-1]
+            cfg.resume_from_checkpoint = latest
+        else:
+            raise ValueError(
+                f"Output directory {output_dir} already contains checkpoints. "
+                "Use --auto_resume to resume, or --output_dir <different> for a new run."
+            )
+    elif os.environ.get("RANK", "0") == "0":
+        logger.warning(
+            "Output directory %s already exists but has no checkpoints. Starting fresh.",
+            output_dir,
+        )
+
+
 def prune_old_checkpoints(output_dir: str, limit: int) -> None:
     """Remove oldest checkpoints if count exceeds limit."""
     dirs = sorted(

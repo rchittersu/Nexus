@@ -35,7 +35,7 @@ class TestRequireMlflow:
 class TestSetupMlflowLogWith:
     def test_returns_tracker(self, tmp_path):
         cfg = SimpleNamespace(experiment_name="my-exp", run_name="my-run", tracking_uri=None)
-        result = setup_mlflow_log_with(tmp_path, cfg)
+        result = setup_mlflow_log_with(tmp_path, cfg, mlflow_run_name="my-run-default")
         from accelerate.tracking import MLflowTracker
         assert isinstance(result, MLflowTracker)
         assert (tmp_path / "mlruns").exists()

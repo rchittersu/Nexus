@@ -59,7 +59,6 @@ def test_training_step_img2img_smoke():
         weighting_scheme="none",
         logit_mean=0.0,
         logit_std=1.0,
-        guidance_scale=3.5,
         accelerator=accelerator,
         loss_fn=loss_fn,
     )
