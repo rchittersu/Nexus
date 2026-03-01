@@ -147,15 +147,18 @@ def init_trackers(accelerator: "Accelerator", cfg) -> None:
     """
     Init MLflow trackers and set user tag. Call when accelerator.is_main_process.
     MLflow run name is "{run_name}-{user}" for 1-to-1 mapping with output_dir (no run_id file).
+    When resuming, skip config param logging (MLflow params are immutable).
     """
     mlflow_cfg = cfg.mlflow
+    resuming = bool(getattr(cfg, "resume_from_checkpoint", None))
     config_dict = {}
-    for k, v in vars(cfg).items():
-        if not k.startswith("_"):
-            try:
-                config_dict[k] = str(v)
-            except Exception:
-                config_dict[k] = repr(v)
+    if not resuming:
+        for k, v in vars(cfg).items():
+            if not k.startswith("_"):
+                try:
+                    config_dict[k] = str(v)
+                except Exception:
+                    config_dict[k] = repr(v)
     accelerator.init_trackers(mlflow_cfg.experiment_name, config=config_dict)
     set_mlflow_user_tag(getattr(mlflow_cfg, "user", "default"))
 
@@ -166,19 +169,22 @@ def log_dataset_input(
     name: str | None = None,
     source_path: str | Path | None = None,
     context: str = "training",
+    resuming: bool = False,
 ) -> None:
     """
     Log dataset to MLflow run. Records class and kwargs as params. If source_path is given,
     also logs as MetaDataset for lineage. Name from config or class_name fallback.
+    When resuming, skip param logging (MLflow params are immutable).
     """
     try:
         import mlflow
 
         dataset_name = name or (class_name.split(":")[-1] if class_name else "dataset")
-        if class_name is not None:
-            mlflow.log_param("dataset.class", class_name)
-        if kwargs:
-            mlflow.log_param("dataset.kwargs", str(kwargs))
+        if not resuming:
+            if class_name is not None:
+                mlflow.log_param("dataset.class", class_name)
+            if kwargs:
+                mlflow.log_param("dataset.kwargs", str(kwargs))
         if source_path:
             import warnings
 

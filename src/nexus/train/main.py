@@ -344,6 +344,7 @@ def main(args=None):
             name=getattr(cfg.dataset, "name", None),
             source_path=ds_kwargs.get("local"),
             context="training",
+            resuming=bool(getattr(cfg, "resume_from_checkpoint", None)),
         )
 
     # --- Loss & validation ---
