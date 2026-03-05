@@ -56,9 +56,6 @@ def test_training_step_img2img_smoke():
         latents_bn_mean=latents_bn_mean,
         latents_bn_std=latents_bn_std,
         noise_scheduler_copy=noise_scheduler,
-        weighting_scheme="none",
-        logit_mean=0.0,
-        logit_std=1.0,
         accelerator=accelerator,
         loss_fn=loss_fn,
     )

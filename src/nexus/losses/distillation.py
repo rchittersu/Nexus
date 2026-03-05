@@ -1,8 +1,10 @@
 """
 Distillation loss: flow loss + distillation loss. Teacher created inside.
+Teacher config is separate from model (student) config.
 """
 
 import torch
+from diffusers import Flux2KleinPipeline
 
 from .context import LossContext
 from .flow_matching import FlowMatchingLoss
@@ -10,17 +12,13 @@ from .flow_matching import FlowMatchingLoss
 
 class DistillationLoss:
     """
-    Combines flow-matching loss and distillation loss. Teacher created inside on first call.
+    Combines flow-matching loss and distillation loss. Teacher created in __init__.
 
-    Config (via YAML loss.kwargs):
-      base: mse | l1 | huber | logcosh (for both flow and distillation terms)
-      huber_delta: float (when base=huber)
-      flow_weight: weight for flow loss (default 0.5)
-      distillation_weight: weight for distillation loss (default 0.5)
-      pretrained_model_name_or_path: teacher model path (required for distillation)
+    Config (via YAML):
+      loss.kwargs: base, huber_delta, flow_weight, distillation_weight
+      loss.teacher: pretrained_model_name_or_path, class_name, subfolder, revision, variant
 
-    When pretrained_model_name_or_path is set, also provide model_cfg, accelerator, weight_dtype
-    (passed by build_loss_fn from main). DistillationLoss resolves transformer_cls, device, etc.
+    When loss.teacher is set, build_loss_fn passes teacher_cfg, accelerator, weight_dtype.
     """
 
     def __init__(
@@ -29,84 +27,36 @@ class DistillationLoss:
         huber_delta: float = 1.0,
         flow_weight: float = 0.5,
         distillation_weight: float = 0.5,
-        pretrained_model_name_or_path: str | None = None,
-        transformer_cls: type | None = None,
-        transformer_subfolder: str = "transformer",
-        revision: str | None = None,
-        variant: str | None = None,
-        device: torch.device | None = None,
-        dtype: torch.dtype = torch.float32,
-        model_cfg=None,
+        teacher_cfg=None,
         accelerator=None,
         weight_dtype=None,
     ):
         self.flow_loss = FlowMatchingLoss(base=base, huber_delta=huber_delta)
         self.flow_weight = flow_weight
         self.distillation_weight = distillation_weight
-        self.teacher_path = pretrained_model_name_or_path
+
         self._teacher: torch.nn.Module | None = None
-
-        if not pretrained_model_name_or_path:
-            self.transformer_cls = None
-            self.transformer_subfolder = "transformer"
-            self.revision = None
-            self.variant = None
-            self.device = None
-            self.dtype = torch.float32
-            return
-
-        if transformer_cls is not None and device is not None:
-            self.transformer_cls = transformer_cls
-            self.transformer_subfolder = transformer_subfolder
-            self.revision = revision
-            self.variant = variant
-            self.device = device
-            self.dtype = dtype
-        else:
-            self._resolve_from_context(model_cfg, accelerator, weight_dtype)
-
-    def _resolve_from_context(self, model_cfg, accelerator, weight_dtype) -> None:
-        """Resolve transformer_cls, device, dtype from training context."""
-        if model_cfg is None or accelerator is None or weight_dtype is None:
-            raise ValueError(
-                "DistillationLoss with pretrained_model_name_or_path requires "
-                "model_cfg, accelerator, and weight_dtype (passed by build_loss_fn)."
+        if teacher_cfg and getattr(teacher_cfg, "pretrained_model_name_or_path", None):
+            if accelerator is None or weight_dtype is None:
+                raise ValueError("DistillationLoss with loss.teacher requires teacher_cfg, accelerator, and weight_dtype (all passed by build_loss_fn).")
+            cls = getattr(teacher_cfg, "_class", None)
+            if cls is None:
+                raise ValueError("loss.teacher.class_name must be resolved in config.")
+            self._teacher = cls.from_pretrained(
+                teacher_cfg.pretrained_model_name_or_path,
+                subfolder=getattr(teacher_cfg, "subfolder", "transformer"),
+                revision=getattr(teacher_cfg, "revision", None),
+                variant=getattr(teacher_cfg, "variant", None),
+                torch_dtype=weight_dtype,
             )
-        dit = getattr(model_cfg, "dit", None) or getattr(model_cfg, "transformer", None)
-        if dit is None:
-            raise ValueError("model.dit or model.transformer required for DistillationLoss")
-        self.transformer_cls = getattr(dit, "_class", None)
-        if self.transformer_cls is None:
-            raise ValueError("model.dit.class_name must be resolved for DistillationLoss")
-        self.transformer_subfolder = getattr(dit, "subfolder", "transformer")
-        self.revision = getattr(model_cfg, "revision", None)
-        self.variant = getattr(model_cfg, "variant", None)
-        self.device = accelerator.device
-        self.dtype = weight_dtype
-
-    def _ensure_teacher(self, ctx: LossContext) -> torch.nn.Module | None:
-        if self._teacher is not None:
-            return self._teacher
-        if not self.teacher_path or self.transformer_cls is None or self.device is None:
-            return None
-        self._teacher = self.transformer_cls.from_pretrained(
-            self.teacher_path,
-            subfolder=self.transformer_subfolder,
-            revision=self.revision,
-            variant=self.variant,
-            torch_dtype=self.dtype,
-        )
-        self._teacher.requires_grad_(False)
-        self._teacher.eval()
-        self._teacher.to(device=self.device, dtype=self.dtype)
-        return self._teacher
+            self._teacher.requires_grad_(False)
+            self._teacher.eval()
+            self._teacher.to(device=accelerator.device, dtype=weight_dtype)
 
     def _compute_teacher_pred(self, ctx: LossContext) -> torch.Tensor | None:
-        teacher = self._ensure_teacher(ctx)
+        teacher = self._teacher
         if teacher is None:
             return None
-        from diffusers import Flux2KleinPipeline
-
         with torch.no_grad():
             out = teacher(
                 hidden_states=ctx.packed_noisy,

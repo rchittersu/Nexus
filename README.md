@@ -133,7 +133,7 @@ python datasets/precompute.py \
 
 | Loss | Use case |
 |------|----------|
-| `FlowMatchingLoss` | Default. MSE/L1/Huber/LogCosh, optional weighting. |
+| `FlowMatchingLoss` | Default. MSE/L1/Huber/LogCosh. |
 | `FlowMatchingWithPriorPreservation` | DreamBooth instance + class |
 | `DistillationLoss` | Flow + distillation from frozen teacher |
 
@@ -142,7 +142,6 @@ Config example:
 ```yaml
 loss:
   class_name: nexus.losses:FlowMatchingLoss
-  weighting_scheme: none
   kwargs:
     base: mse
 ```

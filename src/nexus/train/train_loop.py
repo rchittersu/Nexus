@@ -9,10 +9,6 @@ from typing import Any
 
 import torch
 from diffusers import Flux2KleinPipeline
-from diffusers.training_utils import (
-    compute_density_for_timestep_sampling,
-    compute_loss_weighting_for_sd3,
-)
 
 from nexus.losses.context import LossContext
 
@@ -41,9 +37,6 @@ def training_step_precomputed(
     latents_bn_mean: torch.Tensor,
     latents_bn_std: torch.Tensor,
     noise_scheduler_copy: Any,
-    weighting_scheme: str,
-    logit_mean: float,
-    logit_std: float,
     accelerator: Any,
     loss_fn: Any,
     step: int = 0,
@@ -68,12 +61,7 @@ def training_step_precomputed(
     noise = torch.randn_like(model_input)
     bsz = model_input.shape[0]
 
-    u = compute_density_for_timestep_sampling(
-        weighting_scheme=weighting_scheme,
-        batch_size=bsz,
-        logit_mean=logit_mean,
-        logit_std=logit_std,
-    )
+    u = torch.rand(bsz, device=model_input.device, dtype=model_input.dtype)
     indices = (u * noise_scheduler_copy.config.num_train_timesteps).long()
     timesteps = noise_scheduler_copy.timesteps[indices].to(device=model_input.device)
 
@@ -114,7 +102,7 @@ def training_step_precomputed(
         model_pred, target_model_input_ids
     )
 
-    weighting = compute_loss_weighting_for_sd3(weighting_scheme=weighting_scheme, sigmas=sigmas)
+    weighting = torch.ones_like(model_input)
 
     ctx = LossContext(
         batch=batch,

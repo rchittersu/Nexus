@@ -1,7 +1,7 @@
 """Tests for nexus.losses"""
 
-from types import SimpleNamespace
 from unittest.mock import MagicMock
+
 
 import pytest
 import torch
@@ -134,7 +134,7 @@ class TestBuildLossFn:
 
     def test_passes_extra_kwargs_to_loss(self, tmp_path):
         cfg = _minimal_config(tmp_path, "nexus.losses:FlowMatchingLoss", {"base": "mse"})
-        loss_fn = build_loss_fn(cfg, model_cfg=SimpleNamespace(), accelerator=MagicMock(), weight_dtype=torch.float32)
+        loss_fn = build_loss_fn(cfg, accelerator=MagicMock(), weight_dtype=torch.float32)
         assert isinstance(loss_fn, FlowMatchingLoss)
 
 

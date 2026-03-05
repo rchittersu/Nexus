@@ -40,9 +40,6 @@ train:
 
 loss:
   class_name: nexus.losses:FlowMatchingLoss
-  weighting_scheme: none
-  logit_mean: 0.0
-  logit_std: 1.0
   kwargs:
     base: mse
 

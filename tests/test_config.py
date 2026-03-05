@@ -113,14 +113,15 @@ class TestLoadConfigFull:
         assert hasattr(cfg.optimizer, "_class")
         assert cfg.train.max_steps == 1000
 
-    def test_load_distillation_has_loss_class_and_kwargs(self, config_dir):
-        """t2i_distillation.yaml has DistillationLoss with pretrained path in kwargs."""
+    def test_load_distillation_has_loss_class_and_teacher_config(self, config_dir):
+        """t2i_distillation.yaml has DistillationLoss with loss.teacher config."""
         if not (config_dir / "t2i_distillation.yaml").exists():
             pytest.skip("configs/klein4b/t2i_distillation.yaml not found")
         cfg = load_config(config_dir / "t2i_distillation.yaml")
         assert hasattr(cfg.loss, "_class")
-        assert "pretrained_model_name_or_path" in vars(cfg.loss.kwargs)
         assert "flow_weight" in vars(cfg.loss.kwargs)
+        assert hasattr(cfg.loss, "teacher")
+        assert getattr(cfg.loss.teacher, "pretrained_model_name_or_path", None) is not None
 
 
 class TestParseArgs:

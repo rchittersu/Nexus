@@ -17,7 +17,7 @@ class LossContext:
         noise: Random noise used for flow-matching (same shape as model_input)
         model_output: Student model prediction (unpacked latents)
         model_input: Patchified, normalized latents
-        weighting: Per-element loss weight from sigma schedule
+        weighting: Per-element loss weight
         packed_noisy: Packed noisy input for transformer forward
         model_input_ids: Latent position IDs for transformer
         timesteps: Diffusion timestep per sample

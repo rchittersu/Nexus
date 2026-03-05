@@ -355,7 +355,7 @@ def main(args=None):
 
     # --- Loss & validation ---
     loss_cfg = cfg.loss
-    loss_fn = build_loss_fn(cfg, model_cfg=model_cfg, accelerator=accelerator, weight_dtype=weight_dtype)
+    loss_fn = build_loss_fn(cfg, accelerator=accelerator, weight_dtype=weight_dtype)
     check_prior_preservation_config(cfg)
 
     # --- Optional prompt dropout (null text embed) ---
@@ -428,9 +428,6 @@ def main(args=None):
                     latents_bn_mean=latents_bn_mean,
                     latents_bn_std=latents_bn_std,
                     noise_scheduler_copy=noise_scheduler_copy,
-                    weighting_scheme=loss_cfg.weighting_scheme,
-                    logit_mean=loss_cfg.logit_mean,
-                    logit_std=loss_cfg.logit_std,
                     accelerator=accelerator,
                     loss_fn=loss_fn,
                     step=global_step,

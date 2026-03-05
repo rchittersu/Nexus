@@ -95,19 +95,17 @@ def load_config(path: str | Path) -> SimpleNamespace:
         if hasattr(cfg.model, "dit") and not hasattr(cfg.model, "transformer"):
             cfg.model.transformer = cfg.model.dit
 
-    # Resolve distillation source_transformer if present
-    if hasattr(cfg, "distillation") and hasattr(cfg.distillation, "source_transformer"):
-        st = cfg.distillation.source_transformer
-        if hasattr(st, "class_name"):
-            st._class = _resolve_class(st.class_name)
-
     # Resolve optimizer class
     if hasattr(cfg, "optimizer") and hasattr(cfg.optimizer, "class_name"):
         cfg.optimizer._class = _resolve_class(cfg.optimizer.class_name)
 
-    # Resolve loss class
+    # Resolve loss class and loss.teacher if present
     if hasattr(cfg, "loss") and hasattr(cfg.loss, "class_name"):
         cfg.loss._class = _resolve_class(cfg.loss.class_name)
+    if hasattr(cfg, "loss") and hasattr(cfg.loss, "teacher"):
+        teacher = cfg.loss.teacher
+        if hasattr(teacher, "class_name"):
+            teacher._class = _resolve_class(teacher.class_name)
 
     # Inject latent_channels and text_embed_hidden from base into dataset.kwargs
     if hasattr(cfg, "dataset") and hasattr(cfg.dataset, "kwargs"):

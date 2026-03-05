@@ -24,7 +24,6 @@ LossCallable = Callable[[LossContext], tuple[torch.Tensor, dict]]
 def build_loss_fn(
     cfg: SimpleNamespace,
     *,
-    model_cfg: Any = None,
     accelerator: Any = None,
     weight_dtype: torch.dtype | None = None,
 ) -> LossCallable:
@@ -33,8 +32,13 @@ def build_loss_fn(
     if loss_cls is None:
         raise ValueError("Config must define loss.class_name (e.g. nexus.losses:FlowMatchingLoss)")
     loss_kwargs = ns_to_kwargs(getattr(cfg.loss, "kwargs", None))
-    if model_cfg is not None:
-        loss_kwargs["model_cfg"] = model_cfg
+    teacher_cfg = getattr(cfg.loss, "teacher", None)
+    if teacher_cfg is not None:
+        if accelerator is None or weight_dtype is None:
+            raise ValueError("loss.teacher requires accelerator and weight_dtype to be passed to build_loss_fn.")
+        loss_kwargs["teacher_cfg"] = teacher_cfg
+        loss_kwargs["accelerator"] = accelerator
+        loss_kwargs["weight_dtype"] = weight_dtype
     if accelerator is not None:
         loss_kwargs["accelerator"] = accelerator
     if weight_dtype is not None:
