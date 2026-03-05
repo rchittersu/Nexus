@@ -61,6 +61,49 @@ def check_existing_checkpoints(cfg) -> None:
         )
 
 
+def get_latest_checkpoint(output_dir: str) -> str | None:
+    """
+    Return the checkpoint dir name with the highest step (e.g. 'checkpoint-500').
+    Returns None if no checkpoint-* dirs exist.
+    """
+    if not output_dir or not os.path.exists(output_dir):
+        return None
+    ckpt_dirs = [d for d in os.listdir(output_dir) if d.startswith("checkpoint-")]
+    if not ckpt_dirs:
+        return None
+    return sorted(ckpt_dirs, key=lambda x: int(x.split("-")[1]))[-1]
+
+
+def resolve_checkpoint_path(output_dir: str, checkpoint: str | None) -> tuple[Path, int]:
+    """
+    Resolve checkpoint to full path and step.
+    - If checkpoint is None: use latest in output_dir.
+    - If checkpoint is 'checkpoint-N' or relative: resolve relative to output_dir.
+    - If checkpoint is absolute path: use as-is.
+    Returns (full_path, step).
+    """
+    if checkpoint is None:
+        ckpt_name = get_latest_checkpoint(output_dir)
+        if not ckpt_name:
+            raise ValueError(
+                f"No checkpoints found in {output_dir}. Use --checkpoint to specify a path."
+            )
+        ckpt_path = Path(output_dir) / ckpt_name
+    else:
+        ckpt_path = Path(checkpoint)
+        if not ckpt_path.is_absolute():
+            ckpt_path = Path(output_dir) / ckpt_path
+    if not ckpt_path.exists():
+        raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
+    # Infer step from dir name (checkpoint-N)
+    name = ckpt_path.name
+    if name.startswith("checkpoint-"):
+        step = int(name.split("-")[1])
+    else:
+        step = 0
+    return ckpt_path.resolve(), step
+
+
 def prune_old_checkpoints(output_dir: str, limit: int) -> None:
     """Remove oldest checkpoints if count exceeds limit."""
     dirs = sorted(

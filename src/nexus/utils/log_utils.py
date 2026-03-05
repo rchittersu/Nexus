@@ -204,6 +204,7 @@ def log_dataset_input(
 def log_validation_images_to_mlflow(images: list, step: int, output_dir: str | Path) -> None:
     """
     Save validation images under output_dir/validation_images/ and log to MLflow.
+    Requires an active MLflow run (e.g. during training).
     """
     import mlflow
 
@@ -213,3 +214,67 @@ def log_validation_images_to_mlflow(images: list, step: int, output_dir: str | P
         path = val_dir / f"validation_step{step}_img{i}.png"
         img.save(path)
         mlflow.log_artifact(str(path), artifact_path="validation")
+
+
+def activate_mlflow_run_and_log_validation(
+    output_dir: str | Path,
+    cfg,
+    images: list,
+    step: int,
+    targets: list | None = None,
+) -> None:
+    """
+    Activate the MLflow run for this experiment (by name), save validation images
+    to output_dir/validation/, and log them as artifacts.
+    targets: optional list of (PIL.Image or path) for reference images, aligned with images.
+    """
+    try:
+        import mlflow
+        from PIL import Image
+    except ImportError:
+        return
+
+    mlflow_cfg = getattr(cfg, "mlflow", None)
+    if not mlflow_cfg:
+        return
+
+    experiment_name = getattr(mlflow_cfg, "experiment_name", None)
+    run_name = getattr(mlflow_cfg, "run_name", None)
+    if not experiment_name or not run_name:
+        return
+
+    run_user = getattr(mlflow_cfg, "user", None) or "default"
+    mlflow_run_name = f"{run_name}-{run_user}"
+
+    log_root = Path(getattr(cfg, "log_root", "logs")).resolve()
+    mlflow_dir = log_root / "mlruns"
+    tracking_uri = getattr(mlflow_cfg, "tracking_uri", None) or mlflow_dir.as_uri()
+    uri = tracking_uri if str(tracking_uri).startswith(("http", "file")) else Path(tracking_uri).resolve().as_uri()
+
+    run_id = _find_mlflow_run_by_name(experiment_name, mlflow_run_name, uri)
+    if not run_id:
+        return
+
+    val_dir = Path(output_dir) / "validation"
+    val_dir.mkdir(parents=True, exist_ok=True)
+
+    import os
+    os.environ.setdefault("MLFLOW_TRACKING_URI", str(uri))
+    with mlflow.start_run(run_id=run_id):
+        for i, img in enumerate(images):
+            path = val_dir / f"validation_step{step}_img{i}.png"
+            img.save(path)
+            mlflow.log_artifact(str(path), artifact_path="validation")
+        if targets:
+            for i in range(len(images)):
+                if i >= len(targets) or targets[i] is None:
+                    continue
+                t = targets[i]
+                if isinstance(t, (str, Path)):
+                    src = Path(t)
+                    if src.exists():
+                        mlflow.log_artifact(str(src), artifact_path="validation/targets")
+                elif isinstance(t, Image.Image):
+                    p = val_dir / f"validation_step{step}_target{i}.png"
+                    t.save(p)
+                    mlflow.log_artifact(str(p), artifact_path="validation/targets")

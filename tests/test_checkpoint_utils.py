@@ -8,8 +8,10 @@ import torch
 
 from nexus.utils.checkpoint_utils import (
     check_existing_checkpoints,
+    get_latest_checkpoint,
     load_transformer_state,
     prune_old_checkpoints,
+    resolve_checkpoint_path,
     save_transformer_state,
 )
 
@@ -68,3 +70,47 @@ class TestPruneOldCheckpoints:
         (tmp_path / "checkpoint-100").mkdir()
         prune_old_checkpoints(str(tmp_path), limit=3)
         assert (tmp_path / "checkpoint-100").exists()
+
+
+class TestGetLatestCheckpoint:
+    def test_returns_none_when_no_checkpoints(self, tmp_path):
+        assert get_latest_checkpoint(str(tmp_path)) is None
+
+    def test_returns_none_when_empty_output_dir(self, tmp_path):
+        (tmp_path / "other_dir").mkdir()
+        assert get_latest_checkpoint(str(tmp_path)) is None
+
+    def test_returns_latest_by_step(self, tmp_path):
+        for i in (100, 500, 200):
+            (tmp_path / f"checkpoint-{i}").mkdir()
+        assert get_latest_checkpoint(str(tmp_path)) == "checkpoint-500"
+
+
+class TestResolveCheckpointPath:
+    def test_raises_when_no_checkpoints_and_none(self, tmp_path):
+        with pytest.raises(ValueError, match="No checkpoints found"):
+            resolve_checkpoint_path(str(tmp_path), None)
+
+    def test_uses_latest_when_none(self, tmp_path):
+        (tmp_path / "checkpoint-100").mkdir()
+        (tmp_path / "checkpoint-200").mkdir()
+        path, step = resolve_checkpoint_path(str(tmp_path), None)
+        assert path.name == "checkpoint-200"
+        assert step == 200
+
+    def test_resolves_relative_path(self, tmp_path):
+        (tmp_path / "checkpoint-42").mkdir()
+        path, step = resolve_checkpoint_path(str(tmp_path), "checkpoint-42")
+        assert path == (tmp_path / "checkpoint-42").resolve()
+        assert step == 42
+
+    def test_resolves_absolute_path(self, tmp_path):
+        ckpt = tmp_path / "checkpoint-99"
+        ckpt.mkdir()
+        path, step = resolve_checkpoint_path(str(tmp_path), str(ckpt))
+        assert path == ckpt.resolve()
+        assert step == 99
+
+    def test_raises_when_checkpoint_missing(self, tmp_path):
+        with pytest.raises(FileNotFoundError, match="Checkpoint not found"):
+            resolve_checkpoint_path(str(tmp_path), "checkpoint-999")
