@@ -34,14 +34,9 @@ from tqdm.auto import tqdm
 
 from streaming import StreamingDataLoader
 
-from nexus.utils.checkpoint_utils import (
-    make_dit_load_hook,
-    make_dit_save_hook,
-    prune_old_checkpoints,
-)
+from nexus.utils.checkpoint_utils import prune_old_checkpoints
 from nexus.utils.config_utils import check_prior_preservation_config
 from nexus.utils.log_utils import init_trackers, log_dataset_input, setup_tracking
-from nexus.utils.train_utils import unwrap_model
 
 from .config import ns_to_kwargs, parse_args
 from nexus.losses import build_loss_fn
@@ -213,28 +208,6 @@ def main(args=None):
         fsdp_plugin = accelerator.state.fsdp_plugin
         fsdp_plugin.auto_wrap_policy = fsdp_auto_wrap_policy(transformer)
 
-    unwrap = lambda m: unwrap_model(accelerator, m)
-
-    save_hook = make_dit_save_hook(
-        transformer_cls=trans_cls,
-        pipeline_cls=pipeline_cls,
-        train_mode=train_mode,
-        accelerator=accelerator,
-        unwrap_fn=unwrap,
-        is_fsdp=is_fsdp,
-    )
-    load_hook = make_dit_load_hook(
-        transformer_cls=trans_cls,
-        pipeline_cls=pipeline_cls,
-        train_mode=train_mode,
-        accelerator=accelerator,
-        unwrap_fn=unwrap,
-        is_fsdp=is_fsdp,
-    )
-
-    accelerator.register_save_state_pre_hook(save_hook)
-    accelerator.register_load_state_pre_hook(load_hook)
-
     # TODO: Experiment with this
     if getattr(cfg, "allow_tf32", False) and torch.cuda.is_available():
         torch.backends.cuda.matmul.allow_tf32 = True
@@ -384,10 +357,16 @@ def main(args=None):
 
     path = getattr(cfg, "resume_from_checkpoint", None)
     if path:
+        ckpt_path = os.path.join(cfg.output_dir, path)
         accelerator.print(f"Resuming from {path}")
-        accelerator.load_state(os.path.join(cfg.output_dir, path))
+        accelerator.load_state(ckpt_path)
         global_step = int(path.split("-")[1])
         first_epoch = global_step // num_updates_per_epoch
+        # StreamingDataLoader is not wrapped by Accelerate; restore its state manually.
+        dl_state_path = os.path.join(ckpt_path, "dataloader_state.pt")
+        if os.path.exists(dl_state_path):
+            dl_state = torch.load(dl_state_path, map_location="cpu", weights_only=True)
+            train_dataloader.load_state_dict(dl_state)
 
     progress_bar = tqdm(
         range(max_steps),
@@ -461,6 +440,11 @@ def main(args=None):
                         prune_old_checkpoints(cfg.output_dir, limit)
                     save_path = os.path.join(cfg.output_dir, f"checkpoint-{global_step}")
                     accelerator.save_state(save_path)
+                    # StreamingDataLoader is not wrapped by Accelerate; save its state manually.
+                    if accelerator.is_main_process:
+                        dl_state = train_dataloader.state_dict()
+                        if dl_state is not None:
+                            torch.save(dl_state, os.path.join(save_path, "dataloader_state.pt"))
                     logger.info(f"Saved state to {save_path}")
 
             if global_step >= max_steps:
