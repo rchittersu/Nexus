@@ -5,7 +5,8 @@ extends: base.yaml
 dataset:
   class_name: nexus.data.precomputed_mds_dataset:PrecomputedMDSDataset
   kwargs:
-    local: null
+    streams:
+      - paths: [/path/to/precomputed_mds]
     resolution: 512
     shuffle: true
 

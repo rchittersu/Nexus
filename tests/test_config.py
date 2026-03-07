@@ -143,12 +143,11 @@ class TestParseArgs:
         args = [
             "--config", str(t2i_finetune),
             "--output_dir", "/cli/out",
-            "--precomputed_data_dir", "/cli/mds",
             "--max_train_steps", "500",
         ]
         cfg = parse_args(args)
         assert cfg.mlflow.run_name == "/cli/out"
-        assert cfg.dataset.kwargs.local == "/cli/mds"
         assert cfg.train.max_steps == 500
         assert hasattr(cfg, "_config_path")
         assert "t2i_finetune" in cfg._config_path
+        assert hasattr(cfg.dataset.kwargs, "streams")

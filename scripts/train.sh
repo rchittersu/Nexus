@@ -3,7 +3,7 @@
 #
 # Usage:
 #   ./scripts/train.sh configs/klein4b/t2i_finetune.yaml
-#   ./scripts/train.sh --config configs/klein4b/t2i_finetune.yaml --precomputed_data_dir /path/to/mds
+#   ./scripts/train.sh --config configs/klein4b/t2i_finetune.yaml
 #   ./scripts/train.sh -c configs/klein4b/t2i_finetune.yaml --fsdp -g 0,1
 #
 # Flags:
@@ -42,7 +42,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-[[ -n "$CONFIG" ]] || { echo "Usage: $0 <config.yaml> | --config <config.yaml> [--fsdp] [--cuda_visible_devices 0,1] [--precomputed_data_dir ...] [--output_dir ...] ..."; exit 1; }
+[[ -n "$CONFIG" ]] || { echo "Usage: $0 <config.yaml> | --config <config.yaml> [--fsdp] [--cuda_visible_devices 0,1] [--output_dir ...] ..."; exit 1; }
 
 [[ -z "$CUDA_VISIBLE_DEVICES" ]] || export CUDA_VISIBLE_DEVICES
 

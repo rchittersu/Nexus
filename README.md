@@ -19,10 +19,10 @@ cd datasets/prepare/sstk && ./run.sh all
 
 **Train**:
 
+Set `dataset.kwargs.streams` in the config (or override in a child YAML) with your precomputed MDS paths, then:
+
 ```bash
-./scripts/train.sh configs/klein4b/t2i_finetune.yaml \
-  --precomputed_data_dir /path/to/mds_latents \
-  --output_dir my-run
+./scripts/train.sh configs/klein4b/t2i_finetune.yaml --output_dir my-run
 ```
 
 Or run `accelerate launch` directly (uses your default accelerate config; DDP by default).
@@ -52,11 +52,9 @@ train:
   learning_rate: 2.0e-4
 
 validation:
-  entries:
-    - prompt: "a photo of a sks dog"
-      source: null
-      num_images: 2
-  steps: 250
+  inference_steps: 4
+  guidance_scale: 1.0
+  resolution: 512
 
 mlflow:
   experiment_name: klein4b-t2i-finetune
@@ -66,9 +64,20 @@ mlflow:
 
 **Main sections:** `pipeline`, `model.dit`, `dataset`, `train`, `train_mode`, `lora`, `loss`, `optimizer`, `validation`, `mlflow`
 
+**dataset.streams:** List of streams, each `{paths: [...]}` with optional `proportion`. Multiple paths per stream merge into one. Default `batching_strategy`: `device_per_stream`. Example:
+```yaml
+dataset:
+  kwargs:
+    streams:
+      - paths: [/data/laion1, /data/laion2]
+        proportion: 0.5
+      - paths: [/data/coco]
+        proportion: 0.5
+```
+
 **mlflow required:** `experiment_name`, `run_name`. Output path: `log_root/experiments/{user}/{experiment_name}-{run_name}` (user from `mlflow.user`, defaults to `default` if null). MLflow run name is `{run_name}-{user}` for 1-to-1 mapping with output_dir; resume finds the run by name (no run_id file).
 
-**validation** (inherited from base): `inference_steps: 4`, `guidance_scale: 1.0`. Override `steps`, `entries`, `resolution` per config. Each entry: `{prompt, source, num_images}` (source: null for t2i, path for img2img).
+**validation** (from config): `inference_steps: 4`, `guidance_scale: 1.0`, `resolution: 512`, `seed`. Used by the validation tool.
 
 ---
 
@@ -79,22 +88,40 @@ mlflow:
 | `--config`, `-c` | Required. YAML path. |
 | `--fsdp`, `-f` | Use FSDP (configs/accelerate_fsdp.yaml). Omit for default DDP. |
 | `--cuda_visible_devices`, `-g` | GPU IDs (e.g. 0,1). train.sh only. |
-| `--precomputed_data_dir` | Overrides `dataset.kwargs.local` |
+<｜tool▁call▁end｜><｜tool▁call▁begin｜>
+Read
 | `--output_dir` | Overrides `mlflow.run_name` (run identifier in output path) |
 | `--max_train_steps` | Overrides `train.max_steps` |
 | `--auto_resume` | When output_dir has checkpoints, resume from latest and continue the same MLflow run |
 
 **Existing output_dir:** If checkpoints exist and `--auto_resume` is not set, training errors. If no checkpoints exist, a warning is logged and a fresh run starts (new MLflow run).
 
-**FSDP (Fully Sharded Data Parallel):** For memory-efficient multi-GPU training, pass `--fsdp`:
+**FSDP:** For memory-efficient multi-GPU training, pass `--fsdp` to train.sh. LoRA + FSDP uses PEFT's wrap policy. Adjust `num_processes` in `configs/accelerate_fsdp.yaml` for your GPU count.
 
 ```bash
-./scripts/train.sh configs/klein4b/t2i_finetune.yaml --fsdp \
-  --precomputed_data_dir /path/to/mds_latents \
-  --output_dir my-fsdp-run
+./scripts/train.sh configs/klein4b/t2i_finetune.yaml --fsdp --output_dir my-fsdp-run
 ```
 
-LoRA + FSDP uses PEFT's wrap policy automatically. Adjust `num_processes` in `configs/accelerate_fsdp.yaml` for your GPU count. Without `--fsdp`, training uses your default accelerate config (typically DDP).
+---
+
+## Validation
+
+Standalone tool to run inference on a trained checkpoint and log to MLflow:
+
+```bash
+python -m nexus.tools.validate --config configs/klein4b-base/t2i_distillation.yaml \
+  --val_json /path/to/val.json
+```
+
+| Flag | Effect |
+|------|--------|
+| `--config`, `-c` | Required. Same YAML as training. |
+| `--val_json`, `-v` | Required. JSON file: list of `{text, source?, target?}`. |
+| `--output_dir`, `-o` | Override output dir (default: from config). |
+| `--checkpoint` | Checkpoint path or name (e.g. `checkpoint-500`). Default: latest in output_dir. |
+| `--no-mlflow` | Skip logging to MLflow. Images still saved to output_dir/validation/. |
+
+**val.json format:** Each entry has `text` (prompt), optional `source` (image path for img2img), optional `target` (reference image path for logging).
 
 ---
 
@@ -160,8 +187,8 @@ logs/
         └── {experiment_name}-{run_name}/       # e.g. klein4b-t2i-finetune-batch4-lora4
         ├── config.yaml
         ├── checkpoint-{step}/
-        ├── validation_images/
-        └── transformer_lora.safetensors      # final save
+        ├── validation/                         # from validation tool
+        └── transformer_lora.safetensors       # final save
 ```
 
 **View MLflow:**
@@ -190,7 +217,8 @@ configs/
 └── klein4b-base/          # same structure, FLUX.2-klein-base-4B model
 scripts/train.sh     # wrapper for accelerate launch; use --fsdp for FSDP
 src/nexus/
-├── train/           # main, config, train_loop, validation
+├── train/           # main, config, train_loop
+├── tools/           # validate (standalone validation CLI)
 ├── losses/          # flow_matching, distillation, prior_preservation
 ├── data/            # precomputed datasets, collate
 └── utils/           # checkpoint, log, train utils
@@ -213,7 +241,7 @@ datasets/
 
 | Issue | Fix |
 |-------|-----|
-| `dataset.kwargs.local is required` | Set in config or pass `--precomputed_data_dir` |
+| `dataset.kwargs.streams` missing | Set `streams: [{paths: [/path/to/mds]}]` in config |
 | `mlflow config required` | Config must have `mlflow.experiment_name` and `mlflow.run_name` |
 | MPS + bf16 | Use `fp16` or `null` (bf16 not supported on Apple Silicon) |
 | OOM | Lower batch_size, enable gradient_checkpointing, use LoRA |
