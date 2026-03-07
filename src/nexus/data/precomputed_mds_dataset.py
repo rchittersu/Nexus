@@ -14,6 +14,8 @@ import numpy as np
 import torch
 from streaming import StreamingDataset
 
+from .stream_utils import config_to_streams
+
 
 def _bytes_to_latent(
     data: bytes,
@@ -55,18 +57,21 @@ class PrecomputedMDSDataset(StreamingDataset):
 
     def __init__(
         self,
-        local: str,
+        streams: list,
         resolution: int = 512,
         latent_channels: int = 32,
         text_embed_hidden: int = 0,
         batch_size: int = 4,
         shuffle: bool = True,
         latent_dtype: torch.dtype = torch.float32,
+        batching_strategy: str = "device_per_stream",
     ):
+        stream_objs = config_to_streams(streams)
         super().__init__(
-            local=local,
+            streams=stream_objs,
             batch_size=batch_size,
             shuffle=shuffle,
+            batching_method=batching_strategy,
         )
         self.resolution = resolution
         self.latent_channels = latent_channels

@@ -6,8 +6,7 @@ transformers on precomputed VAE latents and text embeddings.
 
 Usage:
     accelerate launch -m nexus.train --config configs/klein4b/t2i_finetune.yaml
-    accelerate launch -m nexus.train --config configs/klein4b/t2i_finetune.yaml \\
-        --precomputed_data_dir /path/to/mds --output_dir ./out
+    accelerate launch -m nexus.train --config configs/klein4b/t2i_finetune.yaml --output_dir ./out
 """
 
 import warnings

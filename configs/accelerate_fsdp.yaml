@@ -2,7 +2,7 @@
 #
 # Usage:
 #   accelerate launch --config_file configs/accelerate_fsdp.yaml -m nexus.train \
-#     --config configs/klein4b/t2i_finetune.yaml --precomputed_data_dir /path/to/mds
+#     --config configs/klein4b/t2i_finetune.yaml
 #
 # LoRA + FSDP: The training code sets PEFT's fsdp_auto_wrap_policy when both are active.
 # For full fine-tune, this config uses TRANSFORMER_BASED_WRAP with Flux2 block classes.
